@@ -1,5 +1,6 @@
 #include <juce_audio_utils/juce_audio_utils.h>
 #include "SessionGuard.h"
+#include "DiagnosticsLog.h"
 #include "Host/PluginHost.h"
 #include "Host/OutOfProcessScanner.h"
 #include "UI/MainComponent.h"
@@ -89,6 +90,8 @@ public:
         host->setShow (show);
         deviceManager.addAudioCallback (&engine);
         session.watch (*host, engine);
+        diagnostics = std::make_unique<DiagnosticsLog> (deviceManager, engine,
+                                                        SessionGuard::getSupportDirectory().getChildFile ("diagnostics.log"));
 
         ctx = std::make_unique<AppContext> (AppContext { *host, deviceManager, engine, session, *appProperties.getUserSettings() });
         auto* content = new MainComponent (*ctx);
@@ -121,6 +124,7 @@ public:
         host->saveKnownPlugins (session.getPluginListFile());
         host->getKnownPlugins().removeChangeListener (this);
 
+        diagnostics.reset();
         window.reset();
         ctx.reset();
         deviceManager.removeAudioCallback (&engine);
@@ -268,6 +272,7 @@ private:
     std::unique_ptr<MainWindow> window;
     MainComponent* mainComponent = nullptr;
     std::unique_ptr<juce::FileChooser> chooser;
+    std::unique_ptr<DiagnosticsLog> diagnostics;
     juce::File currentFile;
 };
 } // namespace lr

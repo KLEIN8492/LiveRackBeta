@@ -139,6 +139,7 @@ void AudioEngine::audioDeviceAboutToStart (juce::AudioIODevice* device)
 
 void AudioEngine::audioDeviceStopped()
 {
+    lastCallbackStart = 0;
     running.store (false);
     pool.stop();
 }
@@ -149,6 +150,18 @@ void AudioEngine::audioDeviceIOCallbackWithContext (const float* const* inputs, 
                                                     const juce::AudioIODeviceCallbackContext&)
 {
     juce::AudioProcessLoadMeasurer::ScopedTimer timer (loadMeasurer, numSamples);
+
+    const auto callbackStart = juce::Time::getHighResolutionTicks();
+    auto raise = [] (std::atomic<uint32_t>& a, juce::int64 ticks)
+    {
+        const auto us = (uint32_t) (juce::Time::highResolutionTicksToSeconds (ticks) * 1.0e6);
+        if (us > a.load (std::memory_order_relaxed))
+            a.store (us, std::memory_order_relaxed);
+    };
+    if (lastCallbackStart != 0)
+        raise (maxGapUs, callbackStart - lastCallbackStart);
+    lastCallbackStart = callbackStart;
+    lastNumSamples.store (numSamples, std::memory_order_relaxed);
 
     inCallback.store (true, std::memory_order_relaxed);
     heartbeat.fetch_add (1, std::memory_order_relaxed);
@@ -169,6 +182,7 @@ void AudioEngine::audioDeviceIOCallbackWithContext (const float* const* inputs, 
         }
     }
 
+    raise (maxCallbackUs, juce::Time::getHighResolutionTicks() - callbackStart);
     inCallback.store (false, std::memory_order_relaxed);
 }
 

@@ -44,6 +44,12 @@ public:
     std::atomic<uint64_t> heartbeat  { 0 };
     std::atomic<bool>     inCallback { false };
 
+    // ---- diagnostics: worst values since last read (read with exchange(0)) ----
+    std::atomic<uint32_t> maxCallbackUs { 0 };   // time spent inside one callback
+    std::atomic<uint32_t> maxGapUs      { 0 };    // time between two callback starts
+    std::atomic<int>      lastNumSamples { 0 };
+    int getNumWorkers() const noexcept { return pool.getNumWorkers(); }
+
     // ---- juce::AudioIODeviceCallback ----
     void audioDeviceIOCallbackWithContext (const float* const* inputs, int numInputs,
                                            float* const* outputs, int numOutputs,
@@ -79,6 +85,7 @@ private:
     WorkerPool pool;
     InflightLog* inflight = nullptr;
     juce::AudioProcessLoadMeasurer loadMeasurer;
+    juce::int64 lastCallbackStart = 0;            // audio thread only
 };
 
 } // namespace lr

@@ -116,5 +116,6 @@ target_sources(LiveRackTests PRIVATE
     Tests/EngineTests.cpp
     Tests/InflightLogTests.cpp
     Tests/ShowModelTests.cpp
-    Tests/RealPluginTests.cpp)
+    Tests/RealPluginTests.cpp
+    Tests/DeviceBenchTests.cpp)
 target_link_libraries(LiveRackTests PRIVATE LiveRackCore)

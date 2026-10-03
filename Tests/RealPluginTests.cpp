@@ -7,6 +7,7 @@
 #include "Core/PlanBuilder.h"
 #include "Core/PluginLayout.h"
 #include <juce_audio_processors/juce_audio_processors.h>
+#include <thread>
 
 using namespace lr;
 
@@ -20,6 +21,10 @@ public:
         juce::addDefaultFormatsToManager (formats);
 
         runPlugin ("VST3", "/Library/Audio/Plug-Ins/VST3/Defeedback.vst3", "De-Feedback");
+        // The user's live target: 1-3 ms round trip => 32 samples @ 48 kHz.
+        for (int channels : { 1, 2 })
+            for (int b : { 32, 64 })
+                runPlugin ("VST3", "/Library/Audio/Plug-Ins/VST3/Defeedback.vst3", "De-Feedback", b, channels);
         runPlugin ("VST3", "/Library/Audio/Plug-Ins/VST3/WaveShell1-VST3 15.5.vst3", "L2 Mono");
         runPlugin ("VST3", "/Library/Audio/Plug-Ins/VST3/FabFilter Pro-Q 3.vst3", "Pro-Q 3");
         runPlugin ("AudioUnit", findAudioUnit ("oDin", "ValhallaDelay"), "ValhallaDelay");
@@ -46,9 +51,11 @@ private:
         return {};
     }
 
-    void runPlugin (const juce::String& formatName, const juce::String& fileOrId, const juce::String& pluginName)
+    void runPlugin (const juce::String& formatName, const juce::String& fileOrId, const juce::String& pluginName,
+                    int block = 64, int channels = 1)
     {
-        beginTest (pluginName + " (" + formatName + ")");
+        beginTest (pluginName + " (" + formatName + ") " + juce::String (block) + " smp "
+                   + (channels == 1 ? "mono" : "stereo"));
 
         if (fileOrId.isEmpty())
         {
@@ -76,7 +83,6 @@ private:
         }
 
         constexpr double sr = 48000.0;
-        constexpr int block = 64;
 
         juce::String error;
         auto instance = formats.createPluginInstance (*desc, sr, block, error);
@@ -84,7 +90,7 @@ private:
         if (instance == nullptr)
             return;
 
-        const int step = negotiateLayout (*instance, 1); // same as the host, mono rack
+        const int step = negotiateLayout (*instance, channels); // same as the host
         instance->prepareToPlay (sr, block);
         logMessage ("  layout step " + juce::String (step) + ": ins " + juce::String (instance->getTotalNumInputChannels()) + " outs "
                     + juce::String (instance->getTotalNumOutputChannels()) + " buses in "
@@ -99,6 +105,7 @@ private:
         rack.id = "vox";
         rack.critical = true;
         rack.inputs = { 0 };
+        rack.numChannels = channels;
         rack.outputs = { 0, 1 };
         rack.runtime = std::make_shared<RackRuntime> ("vox");
         rack.slots = { slot };
@@ -119,35 +126,61 @@ private:
 
         juce::Random rng (42);
         double worstMs = 0.0, totalMs = 0.0;
+        int overruns = 0;
+        const double budgetMs = 1000.0 * block / sr;
         float outPeak = 0.0f;
         const int blocks = (int) (10.0 * sr / block);
 
-        for (int b = 0; b < blocks; ++b)
+        // Run like Core Audio does: on a real-time thread, one block per period.
+        auto renderLoop = [&]
         {
-            for (int i = 0; i < block; ++i)
+            const auto period = std::chrono::nanoseconds ((long long) (1.0e9 * block / sr));
+            auto next = std::chrono::steady_clock::now();
+
+            for (int b = 0; b < blocks; ++b)
             {
-                const double t = (double) (b * block + i) / sr;
-                in[(size_t) i] = 0.25f * (float) std::sin (2.0 * juce::MathConstants<double>::pi * 220.0 * t)
-                               + 0.02f * (rng.nextFloat() - 0.5f);
+                for (int i = 0; i < block; ++i)
+                {
+                    const double t = (double) (b * block + i) / sr;
+                    in[(size_t) i] = 0.25f * (float) std::sin (2.0 * juce::MathConstants<double>::pi * 220.0 * t)
+                                   + 0.02f * (rng.nextFloat() - 0.5f);
+                }
+
+                    next += period;
+                std::this_thread::sleep_until (next);
+
+                const auto t0 = juce::Time::getHighResolutionTicks();
+                engine.audioDeviceIOCallbackWithContext (ins, 2, outs, 2, block, {});
+                const double ms = juce::Time::highResolutionTicksToSeconds (juce::Time::getHighResolutionTicks() - t0) * 1000.0;
+
+                if (b > 50) // ignore warm-up
+                {
+                    worstMs = juce::jmax (worstMs, ms);
+                    overruns += ms > budgetMs ? 1 : 0;
+                }
+                totalMs += ms;
+
+                for (float v : out0)
+                    outPeak = juce::jmax (outPeak, std::abs (v));
             }
+        };
 
-            const auto t0 = juce::Time::getHighResolutionTicks();
-            engine.audioDeviceIOCallbackWithContext (ins, 2, outs, 2, block, {});
-            const double ms = juce::Time::highResolutionTicksToSeconds (juce::Time::getHighResolutionTicks() - t0) * 1000.0;
+        struct RealtimeRunner final : juce::Thread
+        {
+            std::function<void()> fn;
+            explicit RealtimeRunner (std::function<void()> f) : juce::Thread ("rt bench"), fn (std::move (f)) {}
+            void run() override { fn(); }
+        } runner (renderLoop);
 
-            if (b > 50) // ignore warm-up
-                worstMs = juce::jmax (worstMs, ms);
-            totalMs += ms;
+        runner.startRealtimeThread (juce::Thread::RealtimeOptions{}.withApproximateAudioProcessingTime (block, sr));
+        while (runner.isThreadRunning())
+            juce::Thread::sleep (50);
 
-            for (float v : out0)
-                outPeak = juce::jmax (outPeak, std::abs (v));
-        }
-
-        const double budgetMs = 1000.0 * block / sr;
         logMessage ("  " + desc->name + " by " + desc->manufacturerName
                     + ": avg " + juce::String (totalMs / blocks, 3) + " ms, worst " + juce::String (worstMs, 3)
                     + " ms of a " + juce::String (budgetMs, 2) + " ms block; latency "
-                    + juce::String (slot->plugin->getLatencySamples()) + " samples; out peak "
+                    + juce::String (slot->plugin->getLatencySamples()) + " samples; blocks over budget " + juce::String (overruns) + "/" + juce::String (blocks)
+                    + "; out peak "
                     + juce::String (juce::Decibels::gainToDecibels (outPeak), 1) + " dBFS");
 
         expect (! slot->silentOutput.load(), "plugin output digital silence");
