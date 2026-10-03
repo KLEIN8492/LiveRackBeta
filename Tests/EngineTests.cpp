@@ -235,6 +235,25 @@ public:
                 expectWithinAbsoluteError (h2.outAt (c), h1.outAt (c), 1e-5f);
         }
 
+        beginTest ("a plugin that outputs silence for 2 s is flagged, not bypassed");
+        {
+            AudioEngine engine;
+            Harness h;
+            auto r = rack ("a", { 0 }, { 0 });
+            auto mute = slotWith (1, [] (juce::AudioBuffer<float>& b) { b.clear(); });
+            r.slots = { mute };
+            engine.setPlan (build ({ r }));
+
+            for (int i = 0; i < (int) (1.5 * 48000 / Harness::block); ++i)
+                h.run (engine);
+            expect (! mute->silentOutput.load());
+
+            for (int i = 0; i < (int) (1.0 * 48000 / Harness::block); ++i)
+                h.run (engine);
+            expect (mute->silentOutput.load());
+            expect (mute->fault.load() == FaultReason::none);
+        }
+
         beginTest ("old plans are freed once the audio thread has moved on");
         {
             AudioEngine engine;

@@ -40,6 +40,26 @@ void mixInto (juce::AudioBuffer<float>& dst, int dstChannels, const juce::AudioB
 }
 } // namespace
 
+// A plugin that receives signal but outputs exact digital silence for two
+// seconds is flagged (not bypassed: gates and mutes do this legitimately).
+static void updateSilenceFlag (SlotRuntime& slot, const juce::AudioBuffer<float>& before,
+                               const juce::AudioBuffer<float>& after, int channels, int n, double sampleRate)
+{
+    float in = 0.0f, out = 0.0f;
+    for (int c = 0; c < channels; ++c)
+    {
+        in = juce::jmax (in, before.getMagnitude (c, 0, n));
+        out = juce::jmax (out, after.getMagnitude (c, 0, n));
+    }
+
+    if (in > 0.001f && out == 0.0f)
+        slot.silentSamples += n;
+    else if (out > 0.0f)
+        slot.silentSamples = 0;
+
+    slot.silentOutput.store (slot.silentSamples > (int) (2.0 * sampleRate), std::memory_order_relaxed);
+}
+
 AudioEngine::AudioEngine()
 {
     live = std::make_unique<RenderPlan>();
@@ -324,6 +344,8 @@ void AudioEngine::runSlots (RackJob& job, int n, double sampleRate)
             job.buffer.addFrom (0, 0, job.buffer, 1, 0, n);
             job.buffer.applyGain (0, 0, n, 0.5f);
         }
+
+        updateSilenceFlag (slot, job.backup, job.buffer, rc, n, sampleRate);
 
         const auto verdict = checkSlotOutput (slot.health, job.buffer, rc, n, sampleRate, watchdog);
         if (verdict == FaultReason::none)

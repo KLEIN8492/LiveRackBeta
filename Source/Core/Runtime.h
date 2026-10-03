@@ -23,6 +23,9 @@ struct SlotRuntime
     std::atomic<bool>        resetRequested { false }; // set by "re-arm"; audio thread calls reset()
     std::atomic<float>       processMs      { 0.0f };
     std::atomic<bool>        inProcess      { false };
+    std::atomic<bool>        silentOutput   { false }; // signal in, digital zero out for a while
+
+    int silentSamples = 0;    // audio thread only
 
     int inflightRecord = -1;  // index in the InflightLog, -1 if none
     SlotHealth health;        // audio thread only

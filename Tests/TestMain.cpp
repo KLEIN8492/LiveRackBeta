@@ -11,7 +11,7 @@ int main (int argc, char* argv[])
     if (argc > 1)
         runner.runTestsInCategory (argv[1]);
     else
-        runner.runAllTests();
+        runner.runTestsInCategory ("Core"); // real-plugin tests run only on request
 
     int failures = 0;
     for (int i = 0; i < runner.getNumResults(); ++i)

@@ -29,6 +29,7 @@ add_library(LiveRackCore STATIC
     Source/Core/WorkerPool.cpp
     Source/Core/AudioEngine.cpp
     Source/Core/InflightLog.cpp
+    Source/Core/PluginLayout.cpp
 )
 
 target_link_libraries(LiveRackCore
@@ -96,13 +97,14 @@ target_link_libraries(LiveRackScanner PRIVATE LiveRackCore)
 
 add_executable(LiveRackGuard Guard/GuardMain.cpp)
 
-# Ship the helpers inside the app bundle.
-add_dependencies(LiveRack LiveRackScanner LiveRackGuard)
-add_custom_command(TARGET LiveRack POST_BUILD
+# Ship the helpers inside the app bundle (re-copied and re-signed on every build,
+# so a helper-only change still reaches the bundle).
+add_custom_target(LiveRackBundle ALL
     COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:LiveRackScanner> $<TARGET_BUNDLE_CONTENT_DIR:LiveRack>/MacOS/
     COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:LiveRackGuard> $<TARGET_BUNDLE_CONTENT_DIR:LiveRack>/MacOS/
     COMMAND codesign --force --deep --sign - $<TARGET_BUNDLE_DIR:LiveRack>
     VERBATIM)
+add_dependencies(LiveRackBundle LiveRack LiveRackScanner LiveRackGuard)
 endif()
 
 # ---------------------------------------------------------------------------
@@ -113,5 +115,6 @@ target_sources(LiveRackTests PRIVATE
     Tests/WatchdogTests.cpp
     Tests/EngineTests.cpp
     Tests/InflightLogTests.cpp
-    Tests/ShowModelTests.cpp)
+    Tests/ShowModelTests.cpp
+    Tests/RealPluginTests.cpp)
 target_link_libraries(LiveRackTests PRIVATE LiveRackCore)
