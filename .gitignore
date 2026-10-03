@@ -1,0 +1,4 @@
+build/
+External/JUCE/
+.DS_Store
+build-tests/
