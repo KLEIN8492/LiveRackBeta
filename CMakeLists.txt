@@ -70,6 +70,7 @@ juce_add_gui_app(LiveRack
     PRODUCT_NAME "LiveRack"
     BUNDLE_ID "com.liverack.app"
     COMPANY_NAME "LiveRack"
+    ICON_BIG "${CMAKE_SOURCE_DIR}/Resources/AppIcon.png"
     MICROPHONE_PERMISSION_ENABLED TRUE
     MICROPHONE_PERMISSION_TEXT "LiveRack processes live audio inputs through plugins."
     HARDENED_RUNTIME_ENABLED FALSE)
