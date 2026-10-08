@@ -70,6 +70,7 @@ AudioEngine::AudioEngine()
 AudioEngine::~AudioEngine()
 {
     pool.stop();
+    boost.stop();
 }
 
 // ---------------------------------------------------------------------------
@@ -133,7 +134,12 @@ void AudioEngine::audioDeviceAboutToStart (juce::AudioIODevice* device)
     const auto sampleRate = device->getCurrentSampleRate();
 
     loadMeasurer.reset (sampleRate, blockSize);
-    startWorkers (juce::jmax (0, performanceCoreCount() - 1), device->getWorkgroup(), blockSize, sampleRate);
+    const bool useBoost = boostEnabled.load() && blockSize <= boostMaxBlock;
+    if (useBoost) boost.start(); else boost.stop();
+
+    // One performance core runs the audio thread, one the boost (if on).
+    const int workers = performanceCoreCount() - 1 - (useBoost ? 1 : 0);
+    startWorkers (juce::jmax (0, workers), device->getWorkgroup(), blockSize, sampleRate);
     running.store (true);
 }
 
@@ -142,6 +148,7 @@ void AudioEngine::audioDeviceStopped()
     lastCallbackStart = 0;
     running.store (false);
     pool.stop();
+    boost.stop();
 }
 
 void AudioEngine::audioDeviceIOCallbackWithContext (const float* const* inputs, int numInputs,
@@ -150,6 +157,10 @@ void AudioEngine::audioDeviceIOCallbackWithContext (const float* const* inputs, 
                                                     const juce::AudioIODeviceCallbackContext&)
 {
     juce::AudioProcessLoadMeasurer::ScopedTimer timer (loadMeasurer, numSamples);
+
+    // Flush denormals to zero for everything we and the plugins compute here:
+    // decaying filters in near-silence otherwise get dramatically slower.
+    const juce::ScopedNoDenormals noDenormals;
 
     const auto callbackStart = juce::Time::getHighResolutionTicks();
     auto raise = [] (std::atomic<uint32_t>& a, juce::int64 ticks)

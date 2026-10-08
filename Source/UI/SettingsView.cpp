@@ -19,6 +19,19 @@ SettingsView::SettingsView (AppContext& c)
         b->setTooltip ("Finds new or updated plugins. Each one is tested in a separate process, so a bad plugin can't crash LiveRack.");
         addAndMakeVisible (*b);
     }
+    boostToggle.setTooltip ("Keeps one CPU core busy so the Mac never slows down between tiny audio blocks. "
+                            "Without it, 32-64 sample buffers click. Uses more power: best on mains.");
+    boostToggle.setToggleState (ctx.settings.getBoolValue ("lowLatencyBoost", true), juce::dontSendNotification);
+    boostToggle.onClick = [this]
+    {
+        const bool on = boostToggle.getToggleState();
+        ctx.settings.setValue ("lowLatencyBoost", on);
+        ctx.engine.setLowLatencyBoost (on);
+        ctx.devices.closeAudioDevice();       // takes effect when the device starts
+        ctx.devices.restartLastAudioDevice();
+    };
+    addAndMakeVisible (boostToggle);
+
     scanVst3.onClick = [this] { scan ("VST3"); };
     scanAu.onClick = [this] { scan ("AudioUnit"); };
 }
@@ -55,7 +68,8 @@ void SettingsView::resized()
 {
     auto r = getLocalBounds().reduced (24, 16);
     auto left = r.removeFromLeft (r.getWidth() / 2).withTrimmedRight (24);
-    deviceSelector.setBounds (left.withTrimmedTop (86));
+    boostToggle.setBounds (left.removeFromBottom (28));
+    deviceSelector.setBounds (left.withTrimmedTop (86).withTrimmedBottom (8));
 
     r.removeFromTop (30);
     auto buttons = r.removeFromTop (32);

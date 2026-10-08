@@ -6,6 +6,7 @@
 #include "Core/AudioEngine.h"
 #include "Core/PlanBuilder.h"
 #include "Core/PluginLayout.h"
+#include "Core/CpuBoost.h"
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <thread>
 
@@ -24,7 +25,8 @@ public:
         // The user's live target: 1-3 ms round trip => 32 samples @ 48 kHz.
         for (int channels : { 1, 2 })
             for (int b : { 32, 64 })
-                runPlugin ("VST3", "/Library/Audio/Plug-Ins/VST3/Defeedback.vst3", "De-Feedback", b, channels);
+                for (bool boost : { false, true })
+                    runPlugin ("VST3", "/Library/Audio/Plug-Ins/VST3/Defeedback.vst3", "De-Feedback", b, channels, boost);
         runPlugin ("VST3", "/Library/Audio/Plug-Ins/VST3/WaveShell1-VST3 15.5.vst3", "L2 Mono");
         runPlugin ("VST3", "/Library/Audio/Plug-Ins/VST3/FabFilter Pro-Q 3.vst3", "Pro-Q 3");
         runPlugin ("AudioUnit", findAudioUnit ("oDin", "ValhallaDelay"), "ValhallaDelay");
@@ -52,10 +54,10 @@ private:
     }
 
     void runPlugin (const juce::String& formatName, const juce::String& fileOrId, const juce::String& pluginName,
-                    int block = 64, int channels = 1)
+                    int block = 64, int channels = 1, bool boost = false)
     {
         beginTest (pluginName + " (" + formatName + ") " + juce::String (block) + " smp "
-                   + (channels == 1 ? "mono" : "stereo"));
+                   + (channels == 1 ? "mono" : "stereo") + (boost ? " +boost" : ""));
 
         if (fileOrId.isEmpty())
         {
@@ -120,13 +122,14 @@ private:
         AudioEngine engine;
         engine.setPlan (buildPlan (spec).plan);
 
-        std::vector<float> in (block), out0 (block), out1 (block), silence (block, 0.0f);
+        std::vector<float> in ((size_t) block), out0 ((size_t) block), out1 ((size_t) block), silence ((size_t) block, 0.0f);
         const float* ins[] = { in.data(), silence.data() };
         float* outs[] = { out0.data(), out1.data() };
 
         juce::Random rng (42);
         double worstMs = 0.0, totalMs = 0.0;
         int overruns = 0;
+        std::vector<float> blockMs ((size_t) (10.0 * sr / block) + 1, 0.0f);
         const double budgetMs = 1000.0 * block / sr;
         float outPeak = 0.0f;
         const int blocks = (int) (10.0 * sr / block);
@@ -142,8 +145,12 @@ private:
                 for (int i = 0; i < block; ++i)
                 {
                     const double t = (double) (b * block + i) / sr;
-                    in[(size_t) i] = 0.25f * (float) std::sin (2.0 * juce::MathConstants<double>::pi * 220.0 * t)
-                                   + 0.02f * (rng.nextFloat() - 0.5f);
+                    // Phrases with 1 s gaps of silence, like a vocal: the gaps are
+                    // where filters decay into denormals.
+                    const bool singing = ((int) t % 2) == 0;
+                    in[(size_t) i] = singing ? 0.25f * (float) std::sin (2.0 * juce::MathConstants<double>::pi * 220.0 * t)
+                                                   + 0.02f * (rng.nextFloat() - 0.5f)
+                                             : 0.0f;
                 }
 
                     next += period;
@@ -159,6 +166,7 @@ private:
                     overruns += ms > budgetMs ? 1 : 0;
                 }
                 totalMs += ms;
+                blockMs[(size_t) b] = (float) ms;
 
                 for (float v : out0)
                     outPeak = juce::jmax (outPeak, std::abs (v));
@@ -172,6 +180,9 @@ private:
             void run() override { fn(); }
         } runner (renderLoop);
 
+        CpuBoost cpuBoost;
+        if (boost)
+            cpuBoost.start();
         runner.startRealtimeThread (juce::Thread::RealtimeOptions{}.withApproximateAudioProcessingTime (block, sr));
         while (runner.isThreadRunning())
             juce::Thread::sleep (50);
@@ -182,6 +193,26 @@ private:
                     + juce::String (slot->plugin->getLatencySamples()) + " samples; blocks over budget " + juce::String (overruns) + "/" + juce::String (blocks)
                     + "; out peak "
                     + juce::String (juce::Decibels::gainToDecibels (outPeak), 1) + " dBFS");
+
+        if (block == 32 && ! boost)
+        {
+            // Which blocks are slow? If the plugin does heavy work every N samples,
+            // slow blocks line up on a fixed period.
+            juce::String hist;
+            for (int period : { 2, 4, 8, 16, 32, 64 })
+            {
+                std::vector<double> sum ((size_t) period, 0.0);
+                std::vector<int> cnt ((size_t) period, 0);
+                for (size_t i = 100; i < blockMs.size(); ++i) { sum[i % (size_t) period] += blockMs[i]; cnt[i % (size_t) period]++; }
+                double hi = 0, lo = 1e9;
+                for (size_t k = 0; k < (size_t) period; ++k) { const double v = sum[k] / juce::jmax (1, cnt[k]); hi = juce::jmax (hi, v); lo = juce::jmin (lo, v); }
+                hist << " every " << period * block << " smp: slowest phase " << juce::String (hi, 3) << " ms vs fastest " << juce::String (lo, 3) << ";";
+            }
+            logMessage ("  periodicity:" + hist);
+        }
+
+        if (boost)
+            expectEquals (overruns, 0, "blocks over budget with CPU boost");
 
         expect (! slot->silentOutput.load(), "plugin output digital silence");
         expect (slot->fault.load() == FaultReason::none, juce::String ("watchdog fault: ") + describe (slot->fault.load()));

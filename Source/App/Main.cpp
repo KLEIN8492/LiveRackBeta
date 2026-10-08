@@ -51,6 +51,7 @@ public:
         const auto deviceError = deviceManager.initialise (256, 256, deviceState.get(), true);
 
         engine.setInflightLog (&session.getInflightLog());
+        engine.setLowLatencyBoost (appProperties.getUserSettings()->getBoolValue ("lowLatencyBoost", true));
         host = std::make_unique<PluginHost> (deviceManager, engine, session.getInflightLog());
         host->loadKnownPlugins (session.getPluginListFile());
 

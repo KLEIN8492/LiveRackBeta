@@ -12,6 +12,7 @@ public:
     {
         juce::WorkgroupToken token;
         workgroup.join (token);
+        juce::FloatVectorOperations::disableDenormalisedNumberSupport (true);
 
         uint32_t lastEpoch = epochOf (pool.dispatch.load (std::memory_order_acquire));
 

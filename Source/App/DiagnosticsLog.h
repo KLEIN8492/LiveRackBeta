@@ -35,7 +35,7 @@ private:
 
             line << d->getTypeName() << ":" << d->getName()
                  << " | " << (int) sr << " " << bs << " (cb " << engine.lastNumSamples.load() << ")"
-                 << " | w" << engine.getNumWorkers()
+                 << " | w" << engine.getNumWorkers() << (engine.isBoostActive() ? " boost" : "")
                  << " | " << juce::String (engine.getCpuLoad() * 100.0, 1)
                  << " | " << (int) callbackUs << "/" << periodUs
                  << " | " << (int) gapUs

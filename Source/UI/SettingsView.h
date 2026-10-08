@@ -18,6 +18,7 @@ private:
     juce::AudioDeviceSelectorComponent deviceSelector;
     juce::PluginListComponent pluginList;
     juce::TextButton scanVst3 { "Scan VST3" }, scanAu { "Scan Audio Units" };
+    juce::ToggleButton boostToggle { "Low-latency boost (needed for 32-64 sample buffers)" };
     void scan (const juce::String& formatName);
 };
 } // namespace lr

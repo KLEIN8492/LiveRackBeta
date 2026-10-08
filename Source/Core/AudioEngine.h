@@ -4,6 +4,7 @@
 #include "RenderPlan.h"
 #include "WorkerPool.h"
 #include "InflightLog.h"
+#include "CpuBoost.h"
 
 namespace lr
 {
@@ -29,6 +30,12 @@ public:
 
     void setInflightLog (InflightLog* log) noexcept   { inflight = log; }
     void setGlobalBypass (bool b) noexcept            { globalBypass.store (b); }
+
+    // Low-latency boost: keeps a core busy at buffers <= boostMaxBlock so the
+    // CPU never clocks down between blocks. Applied on the next device start.
+    static constexpr int boostMaxBlock = 128;
+    void setLowLatencyBoost (bool enabled) noexcept  { boostEnabled = enabled; }
+    bool isBoostActive() const noexcept              { return boost.isRunning(); }
     bool isGlobalBypassed() const noexcept            { return globalBypass.load(); }
 
     // Starts the real-time workers. Done automatically when a device starts;
@@ -86,6 +93,8 @@ private:
     InflightLog* inflight = nullptr;
     juce::AudioProcessLoadMeasurer loadMeasurer;
     juce::int64 lastCallbackStart = 0;            // audio thread only
+    CpuBoost boost;
+    std::atomic<bool> boostEnabled { true };
 };
 
 } // namespace lr
