@@ -18,8 +18,11 @@ public:
         bypassButton.onClick = [this] { slot.setProperty (ids::bypassed, bypassButton.getToggleState(), nullptr); };
 
         editButton.onClick = [this] { ctx.host.openEditor (slotId()); };
-        rearmButton.setColour (juce::TextButton::buttonColourId, theme::fault.withAlpha (0.35f));
-        rearmButton.setTooltip ("Turn this plugin back on after a fault");
+        rearmButton.setColour (juce::TextButton::buttonColourId, theme::fault);
+        rearmButton.setColour (juce::TextButton::textColourOffId, juce::Colours::black);
+        rearmButton.setTooltip ("Re-arm: turn this plugin back on after a fault");
+        editButton.setTooltip ("Open the plugin window");
+        bypassButton.setTooltip ("Bypass this plugin");
         rearmButton.onClick = [this] { ctx.host.rearmSlot (slotId()); };
 
         upButton.onClick = [this] { move (-1); };
@@ -52,129 +55,162 @@ public:
         juce::PluginDescription desc;
         show::getPluginDescription (slot, desc);
 
-        juce::String newName = desc.name;
-        juce::String newDetail = desc.manufacturerName + "  " + desc.pluginFormatName;
-        juce::String newStatus;
-        juce::Colour colour = theme::accent;
+        Cells next;
+        next.name = desc.name;
+        next.maker = desc.manufacturerName + " / " + desc.pluginFormatName;
+        next.colour = theme::accent;
         bool faulted = false;
 
         if (error.isNotEmpty())
         {
-            newStatus = error;
-            colour = theme::fault;
+            next.status = "ERROR: " + error;
+            next.colour = theme::fault;
         }
         else if (rt == nullptr || rt->plugin == nullptr)
         {
-            newStatus = "Loading...";
-            colour = theme::dim;
+            next.status = "LOADING";
+            next.colour = theme::dim;
         }
         else
         {
             const auto fault = rt->fault.load();
             const double sr = ctx.host.getSampleRate();
-            const int latency = ctx.host.getSlotLatencySamples (slotId());
-            newDetail += "   latency " + juce::String (1000.0 * latency / sr, 2) + " ms"
-                       + "   cpu " + juce::String (rt->processMs.load(), 2) + " ms";
+            next.latency = juce::String (1000.0 * ctx.host.getSlotLatencySamples (slotId()) / sr, 2);
+            next.cpu = juce::String (rt->processMs.load(), 3);
 
             if (fault != FaultReason::none)
             {
-                newStatus = juce::String ("BYPASSED: ") + describe (fault);
-                colour = theme::fault;
+                next.status = juce::String ("BYPASSED: ") + juce::String (describe (fault)).toUpperCase();
+                next.colour = theme::fault;
                 faulted = true;
             }
             else if (rt->silentOutput.load())
             {
-                newStatus = "No output - check plugin";
-                colour = theme::warn;
+                next.status = "NO OUTPUT";
+                next.colour = theme::warn;
             }
             else if (rt->userBypassed.load())
             {
-                newStatus = "Bypassed";
-                colour = theme::warn;
+                next.status = "BYPASS";
+                next.colour = theme::warn;
             }
             else
             {
-                newStatus = "Active";
+                next.status = "OK";
             }
         }
 
         rearmButton.setVisible (faulted);
         editButton.setEnabled (rt != nullptr && rt->plugin != nullptr);
 
-        if (newName != name || newDetail != detail || newStatus != status || colour != statusColour)
+        if (next != cells)
         {
-            name = newName;
-            detail = newDetail;
-            status = newStatus;
-            statusColour = colour;
+            cells = next;
             repaint();
         }
     }
 
     void paint (juce::Graphics& g) override
     {
-        auto r = getLocalBounds().reduced (0, 3);
-        g.setColour (theme::panel);
-        g.fillRoundedRectangle (r.toFloat(), 6.0f);
-        g.setColour (statusColour);
-        g.fillRoundedRectangle (r.removeFromLeft (4).toFloat(), 2.0f);
+        const int index = slot.getParent().indexOf (slot);
+        g.setColour (index % 2 == 0 ? theme::panel : theme::stripe);
+        g.fillAll();
+        g.setColour (theme::line);
+        g.drawHorizontalLine (getHeight() - 1, 0.0f, (float) getWidth());
 
-        r = r.reduced (12, 6);
-        r.removeFromRight (buttonsWidth);
+        auto cols = Columns (getLocalBounds());
+        theme::led (g, cols.index.removeFromLeft (8).withSizeKeepingCentre (8, 8), cells.colour);
 
-        const int index = slot.getParent().indexOf (slot) + 1;
+        g.setFont (theme::mono (11.0f));
         g.setColour (theme::dim);
-        g.setFont (theme::font (13.0f, true));
-        g.drawText (juce::String (index), r.removeFromLeft (22), juce::Justification::centredLeft);
-
-        auto statusArea = r.removeFromRight (200);
-        g.setColour (statusColour);
-        g.setFont (theme::font (12.0f, true));
-        g.drawText (status, statusArea, juce::Justification::centredRight, true);
+        g.drawText (juce::String (index + 1).paddedLeft ('0', 2), cols.index.withTrimmedLeft (6), juce::Justification::centredLeft);
 
         g.setColour (theme::text);
-        g.setFont (theme::font (15.0f, true));
-        g.drawText (name, r.removeFromTop (r.getHeight() / 2), juce::Justification::bottomLeft, true);
+        g.setFont (theme::font (12.5f, true));
+        g.drawText (cells.name, cols.name, juce::Justification::centredLeft, true);
+
         g.setColour (theme::dim);
-        g.setFont (theme::font (12.0f));
-        g.drawText (detail, r, juce::Justification::topLeft, true);
+        g.setFont (theme::font (11.5f));
+        g.drawText (cells.maker, cols.maker, juce::Justification::centredLeft, true);
+
+        g.setColour (theme::text);
+        g.setFont (theme::mono (11.5f));
+        g.drawText (cells.latency, cols.latency, juce::Justification::centredRight);
+        g.drawText (cells.cpu, cols.cpu, juce::Justification::centredRight);
+
+        g.setColour (cells.colour);
+        g.setFont (theme::font (11.0f, true));
+        g.drawText (cells.status, cols.status, juce::Justification::centredLeft, true);
     }
 
     void resized() override
     {
-        auto r = getLocalBounds().reduced (12, 14).removeFromRight (buttonsWidth - 8);
-        removeButton.setBounds (r.removeFromRight (30));
-        r.removeFromRight (4);
-        downButton.setBounds (r.removeFromRight (30));
+        auto r = Columns (getLocalBounds()).buttons.reduced (0, 4);
+        removeButton.setBounds (r.removeFromRight (24));
         r.removeFromRight (2);
-        upButton.setBounds (r.removeFromRight (30));
-        r.removeFromRight (8);
-        bypassButton.setBounds (r.removeFromRight (70));
-        r.removeFromRight (4);
-        editButton.setBounds (r.removeFromRight (56));
-        r.removeFromRight (4);
-        rearmButton.setBounds (r.removeFromRight (70));
+        downButton.setBounds (r.removeFromRight (24));
+        r.removeFromRight (2);
+        upButton.setBounds (r.removeFromRight (24));
+        r.removeFromRight (6);
+        bypassButton.setBounds (r.removeFromRight (42));
+        r.removeFromRight (2);
+        editButton.setBounds (r.removeFromRight (42));
+        r.removeFromRight (2);
+        rearmButton.setBounds (r.removeFromRight (40));
     }
 
+    // Column layout shared by the rows and the table header.
+    struct Columns
+    {
+        juce::Rectangle<int> index, name, maker, latency, cpu, status, buttons;
+
+        explicit Columns (juce::Rectangle<int> r)
+        {
+            r = r.reduced (8, 0);
+            buttons = r.removeFromRight (214);
+            r.removeFromRight (8);
+            index   = r.removeFromLeft (34);
+            status  = r.removeFromRight (118);
+            r.removeFromRight (8);
+            cpu     = r.removeFromRight (52);
+            r.removeFromRight (4);
+            latency = r.removeFromRight (52);
+            r.removeFromRight (12);
+            maker   = r.removeFromRight (juce::jmin (170, r.getWidth() * 2 / 5));
+            r.removeFromRight (8);
+            name    = r;
+        }
+    };
+
 private:
-    static constexpr int buttonsWidth = 320;
+    struct Cells
+    {
+        juce::String name, maker, latency { "-" }, cpu { "-" }, status;
+        juce::Colour colour;
+        bool operator!= (const Cells& o) const
+        {
+            return name != o.name || maker != o.maker || latency != o.latency || cpu != o.cpu
+                || status != o.status || colour != o.colour;
+        }
+    };
 
     AppContext& ctx;
     juce::ValueTree slot;
-    juce::String name, detail, status;
-    juce::Colour statusColour;
+    Cells cells;
 
-    juce::TextButton editButton { "Edit" }, bypassButton { "Bypass" }, rearmButton { "Re-arm" };
-    juce::TextButton upButton { juce::String (juce::CharPointer_UTF8 ("\xe2\x86\x91")) };
-    juce::TextButton downButton { juce::String (juce::CharPointer_UTF8 ("\xe2\x86\x93")) };
-    juce::TextButton removeButton { juce::String (juce::CharPointer_UTF8 ("\xc3\x97")) };
+    juce::TextButton editButton { "EDIT" }, bypassButton { "BYP" }, rearmButton { "ARM" };
+    juce::TextButton upButton { juce::String (juce::CharPointer_UTF8 ("\xe2\x96\xb2")) };
+    juce::TextButton downButton { juce::String (juce::CharPointer_UTF8 ("\xe2\x96\xbc")) };
+    juce::TextButton removeButton { "X" };
 };
 
 // ---------------------------------------------------------------------------
 RackView::RackView (AppContext& c) : ctx (c)
 {
     nameLabel.setEditable (true);
-    nameLabel.setFont (theme::font (22.0f, true));
+    nameLabel.setFont (theme::font (15.0f, true));
+    nameLabel.setColour (juce::Label::outlineColourId, theme::line);
+    nameLabel.setColour (juce::Label::backgroundColourId, theme::bg);
     nameLabel.setColour (juce::Label::textWhenEditingColourId, theme::text);
     nameLabel.onTextChange = [this]
     {
@@ -183,8 +219,8 @@ RackView::RackView (AppContext& c) : ctx (c)
     };
     addAndMakeVisible (nameLabel);
 
-    widthBox.addItem ("Mono", 1);
-    widthBox.addItem ("Stereo", 2);
+    widthBox.addItem ("MONO", 1);
+    widthBox.addItem ("STEREO", 2);
     widthBox.onChange = [this]
     {
         if (rack.isValid())
@@ -206,11 +242,11 @@ RackView::RackView (AppContext& c) : ctx (c)
     deleteButton.onClick = [this] { deleteRack(); };
     addAndMakeVisible (deleteButton);
 
-    restoreButton.setColour (juce::TextButton::buttonColourId, theme::fault.withAlpha (0.4f));
+    restoreButton.setColour (juce::TextButton::buttonColourId, theme::fault);
+    restoreButton.setColour (juce::TextButton::textColourOffId, juce::Colours::black);
     restoreButton.onClick = [this] { if (rack.isValid()) ctx.host.restoreRack (rack[ids::id].toString()); };
     addChildComponent (restoreButton);
 
-    addPluginButton.setColour (juce::TextButton::buttonColourId, theme::accent.withAlpha (0.25f));
     addPluginButton.onClick = [this] { showPluginBrowser(); };
     addAndMakeVisible (addPluginButton);
 
@@ -258,8 +294,8 @@ void RackView::refresh()
     auto show = ctx.host.getShow();
     auto routing = show::describeRouting (rack, show);
     const auto arrow = routing.indexOf (juce::CharPointer_UTF8 ("\xe2\x86\x92"));
-    inputButton.setButtonText ("Input:  " + routing.substring (0, arrow).trim());
-    outputButton.setButtonText ("Output:  " + routing.substring (arrow + 1).trim());
+    inputButton.setButtonText (routing.substring (0, arrow).trim().toUpperCase());
+    outputButton.setButtonText (routing.substring (arrow + 1).trim().toUpperCase());
 
     rebuildRows();
     tick();
@@ -292,12 +328,12 @@ void RackView::tick()
 
     if (dry)
     {
-        text = "DRY FALLBACK - a plugin failed, this rack is passing its clean input";
+        text = "DRY FALLBACK  -  plugin fault, rack is passing its clean input";
         colour = theme::fault;
     }
     else if ((bool) rack[ids::bypassed] || ctx.engine.isGlobalBypassed())
     {
-        text = "Bypassed - passing input through";
+        text = "BYPASSED  -  passing input through";
         colour = theme::warn;
     }
     else if (ctx.host.getRoutingError().isNotEmpty())
@@ -307,7 +343,8 @@ void RackView::tick()
     }
     else if (rt != nullptr)
     {
-        text = "Rack cpu " + juce::String (rt->processMs.load(), 2) + " ms";
+        text = "RUNNING   rack cpu " + juce::String (rt->processMs.load(), 3) + " ms";
+        colour = theme::accent;
     }
 
     if (restoreButton.isVisible() != dry)
@@ -455,51 +492,100 @@ void RackView::paint (juce::Graphics& g)
     if (! rack.isValid())
     {
         g.setColour (theme::dim);
-        g.setFont (theme::font (15.0f));
-        g.drawText ("Select or add a rack", getLocalBounds(), juce::Justification::centred);
+        g.setFont (theme::font (13.0f));
+        g.drawText ("NO RACK SELECTED", getLocalBounds(), juce::Justification::centred);
         return;
     }
 
-    g.setColour (statusColour);
-    g.setFont (theme::font (13.0f, statusColour == theme::fault));
-    g.drawText (statusText, getLocalBounds().reduced (24, 0).withTop (108).withHeight (24),
-                juce::Justification::centredLeft, true);
+    // Header panel.
+    g.setColour (theme::panel);
+    g.fillRect (headerArea);
+    g.setColour (theme::line);
+    g.drawHorizontalLine (headerArea.getBottom() - 1, 0.0f, (float) getWidth());
+
+    for (auto& [label, area] : captions)
+        theme::caption (g, label, area);
+
+    // Status box.
+    g.setColour (theme::bg);
+    g.fillRect (statusArea);
+    g.setColour (theme::line);
+    g.drawRect (statusArea);
+    theme::led (g, statusArea.reduced (8, 0).removeFromLeft (9).withSizeKeepingCentre (9, 9), statusColour);
+    g.setColour (statusColour == theme::accent ? theme::text : statusColour);
+    g.setFont (theme::mono (11.5f, statusColour == theme::fault));
+    g.drawText (statusText, statusArea.reduced (8, 0).withTrimmedLeft (17), juce::Justification::centredLeft, true);
+
+    // Table header.
+    g.setColour (theme::raised);
+    g.fillRect (tableHeader);
+    g.setColour (theme::line);
+    g.drawRect (tableHeader);
+    SlotRow::Columns cols (tableHeader.withWidth (viewport.getWidth() - viewport.getScrollBarThickness()));
+    theme::caption (g, "#", cols.index);
+    theme::caption (g, "Plugin", cols.name);
+    theme::caption (g, "Maker / Format", cols.maker);
+    theme::caption (g, "Lat ms", cols.latency, juce::Justification::centredRight);
+    theme::caption (g, "Cpu ms", cols.cpu, juce::Justification::centredRight);
+    theme::caption (g, "Status", cols.status);
 
     if (rows.isEmpty())
     {
         g.setColour (theme::dim);
-        g.setFont (theme::font (14.0f));
-        g.drawText ("No plugins yet. Add one below.", viewport.getBounds().withHeight (80), juce::Justification::centred);
+        g.setFont (theme::font (12.0f));
+        g.drawText ("EMPTY CHAIN  -  use + ADD PLUGIN", viewport.getBounds().withHeight (60), juce::Justification::centred);
     }
+
+    // Footer.
+    g.setColour (theme::panel);
+    g.fillRect (footerArea);
+    g.setColour (theme::line);
+    g.drawHorizontalLine (footerArea.getY(), 0.0f, (float) getWidth());
 }
 
 void RackView::resized()
 {
-    auto r = getLocalBounds().reduced (24, 16);
+    captions.clear();
+    auto r = getLocalBounds();
 
-    auto row1 = r.removeFromTop (36);
-    deleteButton.setBounds (row1.removeFromRight (100).reduced (0, 4));
-    row1.removeFromRight (16);
-    bypassToggle.setBounds (row1.removeFromRight (110));
-    criticalToggle.setBounds (row1.removeFromRight (90));
-    row1.removeFromRight (8);
-    widthBox.setBounds (row1.removeFromRight (100).reduced (0, 5));
+    headerArea = r.removeFromTop (92);
+    auto h = headerArea.reduced (12, 8);
+
+    // Row 1: NAME | WIDTH | flags | delete
+    auto row1 = h.removeFromTop (38);
+    auto labelled = [this] (juce::Rectangle<int>& row, const char* label, int width, juce::Component& c)
+    {
+        auto cell = row.removeFromLeft (width);
+        captions.push_back ({ label, cell.removeFromTop (12) });
+        c.setBounds (cell.withTrimmedTop (2));
+        row.removeFromLeft (8);
+    };
+
+    deleteButton.setBounds (row1.removeFromRight (96).withTrimmedTop (14));
     row1.removeFromRight (12);
-    nameLabel.setBounds (row1.translated (-4, 0));
+    bypassToggle.setBounds (row1.removeFromRight (78).withTrimmedTop (14));
+    criticalToggle.setBounds (row1.removeFromRight (84).withTrimmedTop (14));
+    row1.removeFromRight (8);
+    labelled (row1, "Name", juce::jmin (320, row1.getWidth() - 108), nameLabel);
+    labelled (row1, "Width", 92, widthBox);
 
-    r.removeFromTop (12);
-    auto row2 = r.removeFromTop (32);
-    inputButton.setBounds (row2.removeFromLeft (240));
-    row2.removeFromLeft (8);
-    outputButton.setBounds (row2.removeFromLeft (200));
-    restoreButton.setBounds (row2.removeFromRight (160));
+    // Row 2: IN | OUT | status | restore
+    h.removeFromTop (6);
+    auto row2 = h.removeFromTop (34);
+    labelled (row2, "Input", 220, inputButton);
+    labelled (row2, "Output", 160, outputButton);
+    restoreButton.setBounds (row2.removeFromRight (150).withTrimmedTop (14));
+    row2.removeFromRight (8);
+    statusArea = row2.withTrimmedTop (14);
 
-    r.removeFromTop (34); // status line painted here
-    auto bottom = r.removeFromBottom (40);
-    addPluginButton.setBounds (bottom.removeFromLeft (160).withTrimmedTop (6));
+    footerArea = r.removeFromBottom (40);
+    addPluginButton.setBounds (footerArea.reduced (12, 7).removeFromLeft (130));
 
+    r = r.reduced (12, 10);
+    tableHeader = r.removeFromTop (22);
     viewport.setBounds (r);
-    const int rowHeight = 64;
+
+    const int rowHeight = 30;
     const int width = viewport.getWidth() - viewport.getScrollBarThickness();
     rowHolder.setSize (width, juce::jmax (1, rows.size() * rowHeight));
     for (int i = 0; i < rows.size(); ++i)

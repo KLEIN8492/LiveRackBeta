@@ -17,6 +17,7 @@ public:
 
     void showBanner (const juce::String& text, juce::Colour colour);
     void showChanged();   // a new show was loaded
+    void saveSnapshots (const juce::File& dir);  // one PNG per view (debug / docs)
 
     void paint (juce::Graphics&) override;
     void resized() override;
@@ -37,7 +38,7 @@ private:
 
     juce::String bannerText;
     juce::Colour bannerColour;
-    juce::TextButton bannerClose { "Dismiss" };
+    juce::TextButton bannerClose { "DISMISS" };
     TopBar::View view = TopBar::racksView;
 };
 } // namespace lr

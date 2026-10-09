@@ -1,104 +1,71 @@
 """Draws the LiveRack app icon (Resources/AppIcon.png, 1024x1024).
 
-Flat and restrained, in the app's own palette: a dark macOS-shaped tile
-holding three rack units with status LEDs, and a green signal trace
-running through the middle unit. Run: python3 Resources/make_icon.py
+Utilitarian: a flat dark tile holding a 2U rack front panel, rack ears with
+screw holes, a square power LED and a segmented level meter. No gradients,
+no glow. Run: python3 Resources/make_icon.py
 """
-import math
 from pathlib import Path
-from PIL import Image, ImageDraw, ImageFilter
+from PIL import Image, ImageDraw
 
-S = 4                      # supersampling factor
+S = 4
 W = 1024 * S
 
-BG_TOP, BG_BOTTOM = (36, 40, 47), (19, 21, 24)
-UNIT, UNIT_EDGE = (42, 47, 55), (58, 64, 74)
-SCREW = (24, 27, 31)
-SLOT = (64, 71, 82)
-GREEN = (62, 207, 142)
-GREEN_DIM = (62, 207, 142, 70)
+TILE = (27, 27, 27)
+TILE_EDGE = (61, 61, 61)
+PLATE = (52, 52, 52)
+PLATE_EDGE = (78, 78, 78)
+HOLE = (20, 20, 20)
+INK = (220, 220, 220)
+GREEN, AMBER, RED = (88, 194, 88), (224, 160, 48), (226, 74, 59)
 
 
 def px(v):
-    return int(v * S)
+    return int(round(v * S))
 
 
-def rounded(draw, box, r, **kw):
-    draw.rounded_rectangle([px(c) for c in box], radius=px(r), **kw)
-
-
-def tile_mask():
-    m = Image.new("L", (W, W), 0)
-    rounded(ImageDraw.Draw(m), (100, 100, 924, 924), 185, fill=255)
-    return m
+def rect(d, box, **kw):
+    d.rectangle([px(c) for c in box], **kw)
 
 
 def main():
     icon = Image.new("RGBA", (W, W), (0, 0, 0, 0))
-    mask = tile_mask()
-
-    # Soft drop shadow, as in Apple's macOS icon template.
-    shadow = Image.new("RGBA", (W, W), (0, 0, 0, 0))
-    shadow.putalpha(mask.point(lambda a: a * 90 // 255))
-    shadow = shadow.transform(shadow.size, Image.AFFINE, (1, 0, 0, 0, 1, -px(12)))
-    shadow = shadow.filter(ImageFilter.GaussianBlur(px(18)))
-    icon.alpha_composite(shadow)
-
-    # Tile: vertical gradient clipped to the rounded square.
-    grad = Image.new("RGBA", (W, W))
-    gd = ImageDraw.Draw(grad)
-    for y in range(W):
-        t = min(1.0, max(0.0, (y - px(100)) / px(824)))
-        c = tuple(int(BG_TOP[i] + (BG_BOTTOM[i] - BG_TOP[i]) * t) for i in range(3))
-        gd.line([(0, y), (W, y)], fill=c + (255,))
-    icon.paste(grad, (0, 0), mask)
-
     d = ImageDraw.Draw(icon)
-    rounded(d, (100, 100, 924, 924), 185, outline=(255, 255, 255, 18), width=px(3))
 
-    # Three rack units.
-    units = [(262, 382), (452, 572), (642, 762)]
-    left, right = 214, 810
-    for i, (top, bottom) in enumerate(units):
-        rounded(d, (left, top, right, bottom), 22, fill=UNIT, outline=UNIT_EDGE, width=px(3))
+    # macOS tile shape (kept so it sits right in the Dock), flat fill.
+    d.rounded_rectangle([px(100), px(100), px(924), px(924)], radius=px(185), fill=TILE,
+                        outline=TILE_EDGE, width=px(4))
 
-        # Rack ears with screws.
-        cy = (top + bottom) / 2
-        for sx in (left + 34, right - 34):
-            r = 13
-            d.ellipse([px(sx - r), px(cy - r), px(sx + r), px(cy + r)], fill=SCREW)
+    # 2U front panel.
+    left, right, top, bottom = 170, 854, 352, 672
+    rect(d, (left, top, right, bottom), fill=PLATE, outline=PLATE_EDGE, width=px(4))
 
-        # Status LED with a soft glow.
-        lx = left + 92
-        glow = Image.new("RGBA", (W, W), (0, 0, 0, 0))
-        ImageDraw.Draw(glow).ellipse([px(lx - 34), px(cy - 34), px(lx + 34), px(cy + 34)], fill=GREEN_DIM)
-        icon.alpha_composite(glow.filter(ImageFilter.GaussianBlur(px(14))))
-        d = ImageDraw.Draw(icon)
-        d.ellipse([px(lx - 15), px(cy - 15), px(lx + 15), px(cy + 15)], fill=GREEN)
+    # Rack ears: slotted screw holes.
+    for x in (left + 40, right - 40):
+        for y in (top + 62, bottom - 62):
+            rect(d, (x - 22, y - 11, x + 22, y + 11), fill=HOLE)
+    for x in (left + 82, right - 82):
+        d.line([px(x), px(top + 18), px(x), px(bottom - 18)], fill=PLATE_EDGE, width=px(4))
 
-        if i != 1:
-            # Plain units: a row of front-panel slots.
-            start, end, n, gap = left + 150, right - 70, 4, 34
-            slot_w = (end - start - gap * (n - 1)) / n
-            for k in range(n):
-                x0 = start + k * (slot_w + gap)
-                rounded(d, (x0, cy - 9, x0 + slot_w, cy + 9), 9, fill=SLOT)
+    # Power LED + label stub.
+    lx, ly = left + 130, top + 70
+    rect(d, (lx, ly, lx + 34, ly + 34), fill=GREEN, outline=HOLE, width=px(3))
+    rect(d, (lx, ly + 58, lx + 110, ly + 70), fill=INK)
 
-    # Middle unit: the live signal passing through.
-    top, bottom = units[1]
-    cy = (top + bottom) / 2
-    x0, x1 = left + 140, right - 70
-    pts = []
-    for k in range(400):
-        t = k / 399
-        x = x0 + (x1 - x0) * t
-        env = math.sin(math.pi * t) ** 1.5          # swell in the middle
-        y = cy - 38 * env * math.sin(2 * math.pi * 4.5 * t)
-        pts.append((px(x), px(y)))
-    d.line(pts, fill=GREEN, width=px(11), joint="curve")
-    for x, y in (pts[0], pts[-1]):
-        r = px(5.5)
-        d.ellipse([x - r, y - r, x + r, y + r], fill=GREEN)
+    # Segmented meter: 10 segments, 7 lit (green, green... amber), red dark.
+    mx0, mx1, my0, my1 = left + 130, right - 130, bottom - 118, bottom - 64
+    n, gap = 10, 10
+    seg = (mx1 - mx0 - gap * (n - 1)) / n
+    for i in range(n):
+        c = RED if i >= 9 else AMBER if i >= 7 else GREEN
+        lit = i < 8
+        colour = c if lit else tuple(int(v * 0.3) for v in c)
+        x0 = mx0 + i * (seg + gap)
+        rect(d, (x0, my0, x0 + seg, my1), fill=colour)
+
+    # Panel legend boxes, kept inside the ears.
+    for k in range(3):
+        x0 = right - 130 - 62 - k * 92
+        rect(d, (x0, top + 70, x0 + 62, top + 104), outline=PLATE_EDGE, width=px(4))
 
     out = Path(__file__).with_name("AppIcon.png")
     icon.resize((1024, 1024), Image.LANCZOS).save(out)

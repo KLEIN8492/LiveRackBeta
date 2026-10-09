@@ -30,7 +30,7 @@ private:
 
     AppContext& ctx;
     juce::ListBox list { "Racks", this };
-    juce::TextButton addMono { "+ Mono rack" }, addStereo { "+ Stereo rack" };
+    juce::TextButton addMono { "+ MONO RACK" }, addStereo { "+ STEREO RACK" };
     juce::String selectedId;
 
     struct Meters { MeterSmoother in, out; };

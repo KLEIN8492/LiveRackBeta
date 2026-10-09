@@ -4,7 +4,7 @@ namespace lr
 {
 RackList::RackList (AppContext& c) : ctx (c)
 {
-    list.setRowHeight (58);
+    list.setRowHeight (44);
     list.setColour (juce::ListBox::backgroundColourId, juce::Colours::transparentBlack);
     list.setOutlineThickness (0);
     addAndMakeVisible (list);
@@ -105,20 +105,15 @@ void RackList::paintListBoxItem (int row, juce::Graphics& g, int width, int heig
     const auto id = rack[ids::id].toString();
     auto rt = ctx.host.getRack (id);
 
-    auto r = juce::Rectangle<int> (0, 0, width, height).reduced (8, 3);
-    g.setColour (selected ? theme::raised : theme::panel);
-    g.fillRoundedRectangle (r.toFloat(), 6.0f);
+    g.setColour (selected ? theme::select : (row % 2 == 0 ? theme::panel : theme::stripe));
+    g.fillRect (0, 0, width, height);
+    g.setColour (theme::line);
+    g.drawHorizontalLine (height - 1, 0.0f, (float) width);
     if (selected)
     {
-        g.setColour (theme::accent);
-        g.fillRoundedRectangle (r.removeFromLeft (3).toFloat(), 1.5f);
+        g.setColour (theme::text);
+        g.fillRect (0, 0, 3, height);
     }
-    else
-    {
-        r.removeFromLeft (3);
-    }
-
-    r.reduce (10, 6);
 
     // Status: red = dry fallback, amber = a plugin faulted, green = fine, grey = bypassed.
     bool slotFault = false;
@@ -131,39 +126,44 @@ void RackList::paintListBoxItem (int row, juce::Graphics& g, int width, int heig
     if (slotFault)                                     status = theme::warn;
     if (rt != nullptr && rt->dryFallback.load())       status = theme::fault;
 
-    auto top = r.removeFromTop (20);
-    g.setColour (status);
-    g.fillEllipse (top.removeFromLeft (10).withSizeKeepingCentre (8, 8).toFloat());
+    auto r = juce::Rectangle<int> (0, 0, width, height).reduced (10, 5);
+    auto top = r.removeFromTop (18);
+
+    theme::led (g, top.removeFromLeft (10).withSizeKeepingCentre (9, 9), status);
     top.removeFromLeft (6);
+
+    g.setColour (theme::dim);
+    g.setFont (theme::mono (11.0f));
+    g.drawText (juce::String (row + 1).paddedLeft ('0', 2), top.removeFromLeft (20), juce::Justification::centredLeft);
 
     if ((bool) rack[ids::critical])
     {
-        auto badge = top.removeFromRight (58).withSizeKeepingCentre (58, 16);
-        g.setColour (theme::critical.withAlpha (0.2f));
-        g.fillRoundedRectangle (badge.toFloat(), 3.0f);
+        auto tag = top.removeFromRight (36).withSizeKeepingCentre (36, 14);
         g.setColour (theme::critical);
-        g.setFont (theme::font (10.0f, true));
-        g.drawText ("CRITICAL", badge, juce::Justification::centred);
+        g.drawRect (tag);
+        g.setFont (theme::font (9.5f, true));
+        g.drawText ("CRIT", tag, juce::Justification::centred);
+        top.removeFromRight (4);
     }
 
     g.setColour (theme::text);
-    g.setFont (theme::font (14.0f, true));
+    g.setFont (theme::font (13.0f, true));
     g.drawText (rack[ids::name].toString(), top, juce::Justification::centredLeft, true);
 
-    auto mid = r.removeFromTop (16);
+    auto bottom = r.removeFromBottom (14);
+    auto meterArea = bottom.removeFromRight (96);
     g.setColour (theme::dim);
-    g.setFont (theme::font (12.0f));
-    g.drawText ((int) rack[ids::channels] == 2 ? "ST  " + show::describeRouting (rack, show) : show::describeRouting (rack, show),
-                mid, juce::Justification::centredLeft, true);
+    g.setFont (theme::mono (10.5f));
+    g.drawText (juce::String ((int) rack[ids::channels] == 2 ? "ST " : "MO ") + show::describeRouting (rack, show),
+                bottom.withTrimmedLeft (36), juce::Justification::centredLeft, true);
 
     if (rt != nullptr)
     {
         auto& m = meters[id];
-        auto bars = r.removeFromTop (8).withTrimmedTop (2);
-        const int half = bars.getWidth() / 2 - 3;
-        theme::drawMeter (g, bars.removeFromLeft (half).toFloat(), m.in.update (rt->inPeak));
-        bars.removeFromLeft (6);
-        theme::drawMeter (g, bars.toFloat(), m.out.update (rt->outPeak));
+        auto bars = meterArea.withSizeKeepingCentre (meterArea.getWidth(), 10);
+        theme::drawMeter (g, bars.removeFromTop (4), m.in.update (rt->inPeak));
+        bars.removeFromTop (2);
+        theme::drawMeter (g, bars.removeFromTop (4), m.out.update (rt->outPeak));
     }
 }
 
@@ -173,22 +173,31 @@ void RackList::paint (juce::Graphics& g)
     g.setColour (theme::line);
     g.drawVerticalLine (getWidth() - 1, 0.0f, (float) getHeight());
 
+    auto header = getLocalBounds().removeFromTop (24).withTrimmedRight (1);
+    g.setColour (theme::raised);
+    g.fillRect (header);
+    g.setColour (theme::line);
+    g.drawHorizontalLine (header.getBottom() - 1, 0.0f, (float) header.getRight());
+    theme::caption (g, "Racks", header.reduced (10, 0));
+    theme::caption (g, "In / Out", header.reduced (10, 0), juce::Justification::centredRight);
+
     if (getNumRows() == 0)
     {
         g.setColour (theme::dim);
-        g.setFont (theme::font (13.0f));
-        g.drawFittedText ("No racks yet.\nAdd one below for each\nchannel you want to process.",
-                          getLocalBounds().withTrimmedBottom (60).reduced (20), juce::Justification::centred, 4);
+        g.setFont (theme::font (12.0f));
+        g.drawFittedText ("No racks.\nAdd one per channel to process.",
+                          getLocalBounds().withTrimmedTop (24).withTrimmedBottom (44).reduced (16), juce::Justification::centred, 3);
     }
 }
 
 void RackList::resized()
 {
-    auto r = getLocalBounds();
-    auto buttons = r.removeFromBottom (52).reduced (10, 10);
-    addMono.setBounds (buttons.removeFromLeft (buttons.getWidth() / 2 - 4));
-    buttons.removeFromLeft (8);
+    auto r = getLocalBounds().withTrimmedRight (1);
+    r.removeFromTop (24);
+    auto buttons = r.removeFromBottom (40).reduced (8, 7);
+    addMono.setBounds (buttons.removeFromLeft (buttons.getWidth() / 2 - 2));
+    buttons.removeFromLeft (4);
     addStereo.setBounds (buttons);
-    list.setBounds (r.withTrimmedRight (1).withTrimmedTop (6));
+    list.setBounds (r);
 }
 } // namespace lr

@@ -38,9 +38,11 @@ private:
 
     juce::Label nameLabel;
     juce::ComboBox widthBox;
-    juce::ToggleButton criticalToggle { "Critical" }, bypassToggle { "Bypass rack" };
-    juce::TextButton inputButton, outputButton, deleteButton { "Delete rack" };
-    juce::TextButton restoreButton { "Restore processing" }, addPluginButton { "+ Add plugin" };
+    juce::ToggleButton criticalToggle { "CRITICAL" }, bypassToggle { "BYPASS" };
+    juce::TextButton inputButton, outputButton, deleteButton { "DELETE RACK" };
+    juce::TextButton restoreButton { "RESTORE PROCESSING" }, addPluginButton { "+ ADD PLUGIN" };
+    juce::Rectangle<int> headerArea, statusArea, tableHeader, footerArea;
+    std::vector<std::pair<juce::String, juce::Rectangle<int>>> captions;
     juce::String statusText;
     juce::Colour statusColour;
 

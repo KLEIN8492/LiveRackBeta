@@ -15,7 +15,6 @@ SettingsView::SettingsView (AppContext& c)
 
     for (auto* b : { &scanVst3, &scanAu })
     {
-        b->setColour (juce::TextButton::buttonColourId, theme::accent.withAlpha (0.25f));
         b->setTooltip ("Finds new or updated plugins. Each one is tested in a separate process, so a bad plugin can't crash LiveRack.");
         addAndMakeVisible (*b);
     }
@@ -49,11 +48,11 @@ void SettingsView::paint (juce::Graphics& g)
 
     auto r = getLocalBounds().reduced (24, 16);
     g.setColour (theme::text);
-    g.setFont (theme::font (16.0f, true));
-    g.drawText ("Audio device", r.removeFromTop (24), juce::Justification::centredLeft);
+    g.setFont (theme::font (12.0f, true));
+    g.drawText ("AUDIO DEVICE", r.removeFromTop (24), juce::Justification::centredLeft);
 
     auto right = getLocalBounds().reduced (24, 16).withTrimmedLeft (getWidth() / 2);
-    g.drawText ("Plugins", right.removeFromTop (24), juce::Justification::centredLeft);
+    g.drawText ("PLUGINS", right.removeFromTop (24), juce::Justification::centredLeft);
 
     g.setColour (theme::dim);
     g.setFont (theme::font (12.5f));

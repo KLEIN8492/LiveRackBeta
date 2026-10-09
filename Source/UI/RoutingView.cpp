@@ -126,14 +126,22 @@ public:
 
                 auto r = cellBounds (row, col).reduced (2).toFloat();
                 g.setColour (hot ? theme::raised.brighter (0.08f) : theme::raised);
-                g.fillRoundedRectangle (r, 3.0f);
+                g.fillRect (r);
 
                 if (on)
                 {
-                    g.setColour (isInput ? theme::accent : theme::critical);
-                    g.fillRoundedRectangle (r.reduced (3.0f), 2.0f);
+                    g.setColour (isInput ? theme::accent : theme::text);
+                    g.fillRect (r.reduced (3.0f));
                 }
             }
+        }
+
+        if (numIn + numOut == 0)
+        {
+            g.setColour (theme::warn);
+            g.setFont (theme::font (12.0f, true));
+            g.drawText ("NO AUDIO DEVICE  -  choose one in SETTINGS", 0, headerHeight, 500, 24, juce::Justification::centredLeft);
+            return;
         }
 
         if (numRacks == 0)

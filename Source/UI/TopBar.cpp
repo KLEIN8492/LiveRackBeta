@@ -8,6 +8,8 @@ TopBar::TopBar (AppContext& c) : ctx (c)
     {
         b->setClickingTogglesState (true);
         b->setRadioGroupId (1);
+        b->setColour (juce::TextButton::buttonOnColourId, theme::select.brighter (0.2f));
+        b->setColour (juce::TextButton::textColourOnId, theme::text);
         addAndMakeVisible (*b);
     }
 
@@ -31,35 +33,37 @@ void TopBar::setView (View v)
 
 void TopBar::tick()
 {
-    juce::String newDevice, newStats;
-    auto colour = theme::dim;
+    std::vector<Field> next;
+    const auto ok = theme::text;
 
     if (auto* d = ctx.devices.getCurrentAudioDevice())
     {
         const double sr = d->getCurrentSampleRate();
         const int bs = d->getCurrentBufferSizeSamples();
-        const int latency = d->getInputLatencyInSamples() + d->getOutputLatencyInSamples();
-        const double ms = sr > 0 ? 1000.0 * latency / sr : 0.0;
-
-        newDevice = d->getName() + "   " + juce::String (sr / 1000.0, 1) + " kHz   "
-                  + juce::String (bs) + " smp   " + juce::String (ms, 1) + " ms round trip";
-
+        const int rtl = d->getInputLatencyInSamples() + d->getOutputLatencyInSamples();
         const double load = ctx.engine.getCpuLoad() * 100.0;
-        const int xruns = d->getXRunCount();
-        newStats = "DSP " + juce::String (juce::roundToInt (load)) + "%   Dropouts " + juce::String (juce::jmax (0, xruns));
-        colour = load > 80 || xruns > 0 ? theme::warn : theme::dim;
+        const int xruns = juce::jmax (0, d->getXRunCount());
+
+        next.push_back ({ "Device", d->getName(), 230, ok });
+        next.push_back ({ "SR", juce::String ((int) sr), 64, ok });
+        next.push_back ({ "Buf", juce::String (bs), 50, bs > 128 ? theme::warn : ok });
+        next.push_back ({ "RTL ms", juce::String (sr > 0 ? 1000.0 * rtl / sr : 0.0, 2), 66, ok });
+        next.push_back ({ "DSP %", juce::String (juce::roundToInt (load)), 54, load > 80 ? theme::fault : load > 60 ? theme::warn : ok });
+        next.push_back ({ "Xrun", juce::String (xruns), 54, xruns > 0 ? theme::warn : ok });
+        next.push_back ({ "Boost", ctx.engine.isBoostActive() ? "ON" : "OFF", 50, ctx.engine.isBoostActive() ? theme::accent : theme::dim });
     }
     else
     {
-        newDevice = "No audio device - open Settings";
-        colour = theme::fault;
+        next.push_back ({ "Device", "NONE - open SETTINGS", 230, theme::fault });
     }
 
-    if (newDevice != deviceText || newStats != statsText || colour != statsColour)
+    bool changed = next.size() != fields.size();
+    for (size_t i = 0; ! changed && i < next.size(); ++i)
+        changed = next[i] != fields[i];
+
+    if (changed)
     {
-        deviceText = newDevice;
-        statsText = newStats;
-        statsColour = colour;
+        fields = std::move (next);
         repaint();
     }
 
@@ -73,28 +77,39 @@ void TopBar::paint (juce::Graphics& g)
     g.setColour (theme::line);
     g.drawHorizontalLine (getHeight() - 1, 0.0f, (float) getWidth());
 
-    auto r = getLocalBounds().reduced (16, 0);
-    g.setColour (theme::accent);
-    g.setFont (theme::font (15.0f, true));
-    g.drawText ("LIVERACK", r.removeFromLeft (96), juce::Justification::centredLeft);
+    auto r = getLocalBounds().reduced (8, 6);
 
     g.setColour (theme::text);
-    g.setFont (theme::font (13.0f));
-    g.drawText (deviceText, r.removeFromLeft (440), juce::Justification::centredLeft, true);
+    g.setFont (theme::mono (13.0f, true));
+    g.drawText ("LIVERACK", r.removeFromLeft (84), juce::Justification::centredLeft);
 
-    g.setColour (statsColour);
-    g.drawText (statsText, r.removeFromLeft (200), juce::Justification::centredLeft, true);
+    for (auto& f : fields)
+    {
+        auto cell = r.removeFromLeft (f.width);
+        r.removeFromLeft (4);
+
+        g.setColour (theme::bg);
+        g.fillRect (cell);
+        g.setColour (theme::line);
+        g.drawRect (cell);
+
+        auto inner = cell.reduced (5, 2);
+        theme::caption (g, f.label, inner.removeFromTop (12));
+        g.setColour (f.colour);
+        g.setFont (theme::mono (12.0f, true));
+        g.drawText (f.value, inner, juce::Justification::centredLeft, true);
+    }
 }
 
 void TopBar::resized()
 {
-    auto r = getLocalBounds().reduced (12, 8);
-    bypassAll.setBounds (r.removeFromRight (110));
-    r.removeFromRight (16);
-    settingsButton.setBounds (r.removeFromRight (80));
-    r.removeFromRight (4);
-    routingButton.setBounds (r.removeFromRight (80));
-    r.removeFromRight (4);
-    racksButton.setBounds (r.removeFromRight (80));
+    auto r = getLocalBounds().reduced (8, 7);
+    bypassAll.setBounds (r.removeFromRight (104));
+    r.removeFromRight (12);
+    settingsButton.setBounds (r.removeFromRight (84));
+    r.removeFromRight (2);
+    routingButton.setBounds (r.removeFromRight (78));
+    r.removeFromRight (2);
+    racksButton.setBounds (r.removeFromRight (70));
 }
 } // namespace lr

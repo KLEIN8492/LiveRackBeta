@@ -85,7 +85,7 @@ void PluginBrowser::paintListBoxItem (int row, juce::Graphics& g, int width, int
     auto& d = shown[(size_t) row];
     if (selected)
     {
-        g.setColour (theme::accent.withAlpha (0.18f));
+        g.setColour (theme::select);
         g.fillRect (0, 0, width, height);
     }
 

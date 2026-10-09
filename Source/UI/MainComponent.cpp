@@ -44,6 +44,27 @@ void MainComponent::showChanged()
     routingView.refresh();
 }
 
+void MainComponent::saveSnapshots (const juce::File& dir)
+{
+    const std::pair<TopBar::View, const char*> views[] = { { TopBar::racksView, "racks" },
+                                                           { TopBar::routingView, "routing" },
+                                                           { TopBar::settingsView, "settings" } };
+    for (auto& [v, name] : views)
+    {
+        topBar.setView (v);
+        timerCallback();
+        auto image = createComponentSnapshot (getLocalBounds(), true, 2.0f);
+        juce::FileOutputStream out (dir.getChildFile (juce::String (name) + ".png"));
+        if (out.openedOk())
+        {
+            out.setPosition (0);
+            out.truncate();
+            juce::PNGImageFormat().writeImageToStream (image, out);
+        }
+    }
+    topBar.setView (TopBar::racksView);
+}
+
 void MainComponent::showBanner (const juce::String& text, juce::Colour colour)
 {
     bannerText = text;
@@ -89,24 +110,24 @@ void MainComponent::paint (juce::Graphics& g)
 
     if (bannerText.isNotEmpty())
     {
-        auto r = getLocalBounds().withTop (topBar.getBottom()).withHeight (36);
-        g.setColour (bannerColour.withAlpha (0.18f));
-        g.fillRect (r);
+        auto r = getLocalBounds().withTop (topBar.getBottom()).withHeight (30);
         g.setColour (bannerColour);
-        g.setFont (theme::font (13.0f, true));
-        g.drawText (bannerText, r.reduced (16, 0).withTrimmedRight (90), juce::Justification::centredLeft, true);
+        g.fillRect (r);
+        g.setColour (juce::Colours::black);
+        g.setFont (theme::font (12.0f, true));
+        g.drawText (bannerText.toUpperCase(), r.reduced (12, 0).withTrimmedRight (90), juce::Justification::centredLeft, true);
     }
 }
 
 void MainComponent::resized()
 {
     auto r = getLocalBounds();
-    topBar.setBounds (r.removeFromTop (52));
+    topBar.setBounds (r.removeFromTop (46));
 
     if (bannerText.isNotEmpty())
     {
-        auto banner = r.removeFromTop (36);
-        bannerClose.setBounds (banner.removeFromRight (90).reduced (8, 6));
+        auto banner = r.removeFromTop (30);
+        bannerClose.setBounds (banner.removeFromRight (90).reduced (6, 5));
     }
 
     if (settingsView != nullptr && settingsView->isVisible())
@@ -115,7 +136,7 @@ void MainComponent::resized()
         return;
     }
 
-    rackList.setBounds (r.removeFromLeft (300));
+    rackList.setBounds (r.removeFromLeft (330));
     rackView.setBounds (r);
     routingView.setBounds (r);
 }

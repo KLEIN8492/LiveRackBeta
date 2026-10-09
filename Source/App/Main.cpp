@@ -17,7 +17,7 @@ public:
         setUsingNativeTitleBar (true);
         setContentOwned (content, true);
         setResizable (true, true);
-        setResizeLimits (900, 560, 10000, 10000);
+        setResizeLimits (1120, 600, 10000, 10000);
         centreWithSize (getWidth(), getHeight());
         setVisible (true);
     }
@@ -37,8 +37,12 @@ public:
     const juce::String getApplicationVersion() override { return JUCE_APPLICATION_VERSION_STRING; }
     bool moreThanOneInstanceAllowed() override          { return false; }
 
-    void initialise (const juce::String&) override
+    void initialise (const juce::String& commandLine) override
     {
+        // --snapshot <dir>: render each view to PNG without opening audio, then quit.
+        snapshotDir = commandLine.fromFirstOccurrenceOf ("--snapshot", false, false).trim().unquoted();
+        const bool snapshotMode = commandLine.contains ("--snapshot");
+
         session.begin();
         latencyCritical = std::make_unique<LatencyCriticalActivity> ("LiveRack is processing live audio");
 
@@ -50,7 +54,8 @@ public:
         appProperties.setStorageParameters (options);
 
         auto deviceState = juce::parseXML (session.getDeviceFile());
-        const auto deviceError = deviceManager.initialise (256, 256, deviceState.get(), true);
+        const auto deviceError = snapshotMode ? juce::String()
+                                              : deviceManager.initialise (256, 256, deviceState.get(), true);
 
         engine.setInflightLog (&session.getInflightLog());
         engine.setLowLatencyBoost (appProperties.getUserSettings()->getBoolValue ("lowLatencyBoost", true));
@@ -115,6 +120,15 @@ public:
         }
 
         juce::MenuBarModel::setMacMainMenu (this);
+
+        if (snapshotMode)
+            juce::Timer::callAfterDelay (3000, [this]
+            {
+                auto dir = juce::File (snapshotDir);
+                dir.createDirectory();
+                mainComponent->saveSnapshots (dir);
+                juce::JUCEApplication::quit();
+            });
     }
 
     void shutdown() override
@@ -279,6 +293,7 @@ private:
     std::unique_ptr<DiagnosticsLog> diagnostics;
     std::unique_ptr<LatencyCriticalActivity> latencyCritical;
     juce::File currentFile;
+    juce::String snapshotDir;
 };
 } // namespace lr
 

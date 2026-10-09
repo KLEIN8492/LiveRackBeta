@@ -4,6 +4,8 @@
 
 namespace lr
 {
+// Status strip: boxed readouts (device, rate, buffer, round trip, DSP,
+// dropouts, boost), view switches and the BYPASS ALL panic button.
 class TopBar final : public juce::Component
 {
 public:
@@ -11,7 +13,7 @@ public:
 
     explicit TopBar (AppContext&);
 
-    void tick();               // 30 Hz: refresh stats
+    void tick();               // 30 Hz: refresh readouts
     void setView (View);
     std::function<void (View)> onViewChanged;
 
@@ -19,11 +21,18 @@ public:
     void resized() override;
 
 private:
-    AppContext& ctx;
-    juce::String deviceText, statsText;
-    juce::Colour statsColour = theme::dim;
+    struct Field
+    {
+        juce::String label, value;
+        int width;
+        juce::Colour colour;
+        bool operator!= (const Field& o) const { return value != o.value || colour != o.colour; }
+    };
 
-    juce::TextButton racksButton { "Racks" }, routingButton { "Routing" }, settingsButton { "Settings" };
+    AppContext& ctx;
+    std::vector<Field> fields;
+
+    juce::TextButton racksButton { "RACKS" }, routingButton { "ROUTING" }, settingsButton { "SETTINGS" };
     juce::TextButton bypassAll { "BYPASS ALL" };
 };
 } // namespace lr
