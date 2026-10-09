@@ -214,6 +214,14 @@ public:
         };
         addAndMakeVisible (boost);
 
+        align.setToggleState (ctx.host.isAligningRacks(), juce::dontSendNotification);
+        align.onClick = [this]
+        {
+            ctx.settings.setValue ("alignRacks", align.getToggleState());
+            ctx.host.setAlignRacks (align.getToggleState());
+        };
+        addAndMakeVisible (align);
+
         reveal.onClick = [] { SessionGuard::getSupportDirectory().getChildFile ("diagnostics.log").revealToUser(); };
         addAndMakeVisible (reveal);
     }
@@ -230,27 +238,35 @@ public:
                           "Uses more power: best on mains.",
                           r.withTrimmedTop (30).removeFromTop (48), juce::Justification::topLeft, 3);
 
-        theme::caption (g, "Diagnostics", r.withTrimmedTop (100).removeFromTop (14));
+        g.setColour (theme::dim);
+        g.setFont (theme::font (11.5f));
+        g.drawFittedText ("Delays every rack to the latency of the slowest one, so inserts summed on the console "
+                          "(drum mics, stereo pairs, parallel buses) stay in phase. Off: each rack only has its own plugins' latency. "
+                          "Either way a rack's latency never changes when plugins are bypassed or fault.",
+                          r.withTrimmedTop (114).removeFromTop (48), juce::Justification::topLeft, 3);
+
+        theme::caption (g, "Diagnostics", r.withTrimmedTop (184).removeFromTop (14));
         g.setColour (theme::text);
         g.setFont (theme::mono (11.0f));
         g.drawText (SessionGuard::getSupportDirectory().getChildFile ("diagnostics.log").getFullPathName(),
-                    r.withTrimmedTop (118).removeFromTop (18), juce::Justification::centredLeft, true);
+                    r.withTrimmedTop (202).removeFromTop (18), juce::Justification::centredLeft, true);
         g.setColour (theme::dim);
         g.setFont (theme::font (11.5f));
         g.drawText ("One line per second per interface: buffer, worst callback, gaps, dropouts.",
-                    r.withTrimmedTop (138).removeFromTop (18), juce::Justification::centredLeft, true);
+                    r.withTrimmedTop (222).removeFromTop (18), juce::Justification::centredLeft, true);
     }
 
     void resized() override
     {
         auto r = getLocalBounds().reduced (16, 12);
         boost.setBounds (r.removeFromTop (24).withWidth (420));
-        reveal.setBounds (r.getX(), r.getY() + 140, 150, 26);
+        align.setBounds (r.getX(), r.getY() + 64, 420, 24);
+        reveal.setBounds (r.getX(), r.getY() + 224, 150, 26);
     }
 
 private:
     AppContext& ctx;
-    juce::ToggleButton boost { "LOW-LATENCY BOOST" };
+    juce::ToggleButton boost { "LOW-LATENCY BOOST" }, align { "ALIGN ALL RACKS TO THE SAME LATENCY" };
     juce::TextButton reveal { "SHOW IN FINDER" };
 };
 

@@ -34,6 +34,7 @@ add_library(LiveRackCore STATIC
     Source/Core/PortRef.cpp
     Source/Core/ClockBridge.cpp
     Source/Core/DeviceHub.cpp
+    Source/Core/DelayLine.cpp
 )
 
 target_link_libraries(LiveRackCore

@@ -17,6 +17,48 @@ PluginHost::PluginHost (DeviceHub& hub, InflightLog& log)
         if (! token.expired())
             devicesChanged();
     };
+
+    startTimerHz (4);
+}
+
+int PluginHost::getRackLatency (const juce::String& rackId) const
+{
+    auto it = latencies.find (rackId);
+    return it != latencies.end() ? it->second : 0;
+}
+
+void PluginHost::setAlignRacks (bool b)
+{
+    alignRacks = b;
+    rebuildPlan();
+}
+
+// Plugins may call this from any thread (including audio): just set a flag.
+void PluginHost::audioProcessorChanged (juce::AudioProcessor*, const ChangeDetails& details)
+{
+    if (details.latencyChanged)
+        latencyDirty.store (true);
+}
+
+void PluginHost::timerCallback()
+{
+    bool rebuild = latencyDirty.exchange (false);
+
+    // A bridge that grew its latency during warm-up, or locked it, changes
+    // the rack's total latency: realign.
+    for (auto& [key, bridge] : bridges)
+    {
+        const auto s = bridge->getStats();
+        auto& last = bridgeState[key];
+        if (std::abs (s.target - last.first) > 0.5 || s.locked != last.second)
+        {
+            last = { s.target, s.locked };
+            rebuild = true;
+        }
+    }
+
+    if (rebuild)
+        rebuildPlan();
 }
 
 void PluginHost::clearAllPlans()
@@ -42,7 +84,11 @@ juce::String PluginHost::getHome (const juce::String& rackId) const
 PluginHost::~PluginHost()
 {
     *alive = false;
+    stopTimer();
     cancelPendingUpdate();
+    for (auto& [id, slot] : slots)
+        if (slot->plugin != nullptr)
+            slot->plugin->removeListener (this);
     devices.onChanged = nullptr;
     show.removeListener (this);
     windows.clear();
@@ -81,7 +127,11 @@ void PluginHost::setShow (juce::ValueTree newShow)
     waitForEngines();
 
     for (auto& [id, slot] : slots)
+    {
+        if (slot->plugin != nullptr)
+            slot->plugin->removeListener (this);
         inflight.releaseRecord (slot->inflightRecord);
+    }
 
     slots.clear();
     racks.clear();
@@ -120,6 +170,8 @@ void PluginHost::detachSlot (const juce::String& slotId)
 
     if (auto it = slots.find (slotId); it != slots.end())
     {
+        if (it->second->plugin != nullptr)
+            it->second->plugin->removeListener (this);
         inflight.releaseRecord (it->second->inflightRecord);
         slots.erase (it); // the retired plan keeps it alive until the audio thread lets go
     }
@@ -173,6 +225,7 @@ void PluginHost::createInstance (juce::ValueTree slot)
                     instance->setStateInformation (data.getData(), (int) data.getSize());
             }
 
+            instance->addListener (this);
             it->second->plugin = std::move (instance);
             slotErrors.erase (slotId);
             rebuildPlan();
@@ -242,6 +295,7 @@ void PluginHost::rebuildPlan()
 
     PlanSpec spec;
     spec.sampleRate = preparedRate;
+    spec.alignRacks = alignRacks;
     for (auto& o : devices.getOpen())
         spec.devices.push_back ({ o->name,
                                   o->device->getInputChannelNames().size(),
@@ -296,6 +350,8 @@ void PluginHost::rebuildPlan()
     if (result.error.isEmpty())
     {
         homes = result.homes;
+        latencies = result.latencies;
+        alignedLatency = result.alignedLatency;
         for (auto& o : devices.getOpen())
         {
             auto it = result.plans.find (o->name);

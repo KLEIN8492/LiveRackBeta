@@ -49,6 +49,10 @@ void TopBar::tick()
         next.push_back ({ "SR", juce::String ((int) hub.getSampleRate()), 64, ok });
         next.push_back ({ "Buf", juce::String (block), 50, block > 128 ? theme::warn : ok });
         next.push_back ({ "RTL ms", juce::String (worstRtl, 2), 66, ok });
+        next.push_back ({ ctx.host.isAligningRacks() ? "Rack LAT" : "Rack LAT*",
+                          ctx.host.isAligningRacks() ? juce::String (1000.0 * ctx.host.getAlignedLatency() / hub.getSampleRate(), 2)
+                                                     : juce::String ("own"),
+                          70, ok });
         next.push_back ({ "DSP %", juce::String (juce::roundToInt (worstLoad)), 54, worstLoad > 80 ? theme::fault : worstLoad > 60 ? theme::warn : ok });
         next.push_back ({ "Xrun", juce::String (xruns), 54, xruns > 0 ? theme::warn : ok });
         next.push_back ({ "Boost", hub.isBoostActive() ? "ON" : "OFF", 50, hub.isBoostActive() ? theme::accent : theme::dim });

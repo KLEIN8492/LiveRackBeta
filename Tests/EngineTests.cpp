@@ -13,11 +13,14 @@ class FakePlugin final : public juce::AudioPluginInstance
 public:
     using Fn = std::function<void (juce::AudioBuffer<float>&)>;
 
-    FakePlugin (int channels, Fn f)
+    FakePlugin (int channels, Fn f, int latency = 0)
         : juce::AudioPluginInstance (BusesProperties()
               .withInput ("In", channels == 1 ? juce::AudioChannelSet::mono() : juce::AudioChannelSet::stereo())
               .withOutput ("Out", channels == 1 ? juce::AudioChannelSet::mono() : juce::AudioChannelSet::stereo())),
-          fn (std::move (f)) {}
+          fn (std::move (f))
+    {
+        setLatencySamples (latency);
+    }
 
     void fillInPluginDescription (juce::PluginDescription& d) const override { d.name = "Fake"; }
     const juce::String getName() const override { return "Fake"; }
@@ -41,11 +44,65 @@ private:
     Fn fn;
 };
 
-std::shared_ptr<SlotRuntime> slotWith (int channels, FakePlugin::Fn fn)
+std::shared_ptr<SlotRuntime> slotWith (int channels, FakePlugin::Fn fn, int latency = 0)
 {
     auto s = std::make_shared<SlotRuntime> (juce::Uuid().toString());
-    s->plugin = std::make_unique<FakePlugin> (channels, std::move (fn));
+    s->plugin = std::make_unique<FakePlugin> (channels, std::move (fn), latency);
     return s;
+}
+
+// A plugin that really delays its input by `latency` samples (and reports it).
+std::shared_ptr<SlotRuntime> latentSlot (int latency)
+{
+    auto ring = std::make_shared<std::vector<float>> ((size_t) latency + 1, 0.0f);
+    auto pos = std::make_shared<size_t> (0);
+    return slotWith (1, [ring, pos, latency] (juce::AudioBuffer<float>& b)
+    {
+        float* d = b.getWritePointer (0);
+        for (int i = 0; i < b.getNumSamples(); ++i)
+        {
+            const float in = d[i];
+            d[i] = (*ring)[(*pos + 1) % ring->size()];
+            (*ring)[*pos] = in;
+            *pos = (*pos + 1) % ring->size();
+        }
+        juce::ignoreUnused (latency);
+    }, latency);
+}
+
+// Sends one impulse into input 0 and returns the sample index where each
+// output channel peaks.
+std::vector<int> impulseArrival (AudioEngine& engine, int numOutputs, int blocks = 8, int block = 64,
+                                 std::function<void (int)> beforeBlock = {})
+{
+    std::vector<float> in ((size_t) block), silence ((size_t) block, 0.0f);
+    std::vector<std::vector<float>> out ((size_t) numOutputs, std::vector<float> ((size_t) block));
+    std::vector<int> arrival ((size_t) numOutputs, -1);
+    std::vector<float> peak ((size_t) numOutputs, 0.0f);
+
+    for (int b = 0; b < blocks; ++b)
+    {
+        if (beforeBlock)
+            beforeBlock (b);
+        std::fill (in.begin(), in.end(), 0.0f);
+        if (b == 0)
+            in[5] = 1.0f;
+
+        std::vector<const float*> ins { in.data(), silence.data(), silence.data(), silence.data() };
+        std::vector<float*> outs;
+        for (auto& o : out)
+            outs.push_back (o.data());
+        engine.audioDeviceIOCallbackWithContext (ins.data(), 4, outs.data(), numOutputs, block, {});
+
+        for (int c = 0; c < numOutputs; ++c)
+            for (int i = 0; i < block; ++i)
+                if (std::abs (out[(size_t) c][(size_t) i]) > peak[(size_t) c] + 1e-6f)
+                {
+                    peak[(size_t) c] = std::abs (out[(size_t) c][(size_t) i]);
+                    arrival[(size_t) c] = b * block + i;
+                }
+    }
+    return arrival;
 }
 
 FakePlugin::Fn gain (float g)
@@ -285,6 +342,74 @@ public:
             expectWithinAbsoluteError (hb.outAt (0), 0.2f * 2.0f, 1e-4f);  // A in 2 (0.2) x2 on B out 1
             expectWithinAbsoluteError (ha.outAt (3), 0.1f, 1e-6f);         // local rack: no bridge
             expectWithinAbsoluteError (ha.outAt (0), 0.0f, 1e-6f);
+        }
+
+        beginTest ("latency stays the same when a latent plugin is bypassed or faults");
+        {
+            for (int mode = 0; mode < 3; ++mode)   // 0 active, 1 user-bypassed, 2 faulted
+            {
+                AudioEngine engine;
+                auto r = rack ("a", { 0 }, { 0 });
+                auto s = latentSlot (10);
+                if (mode == 1) s->userBypassed = true;
+                if (mode == 2) s->fault = FaultReason::nonFinite;
+                r.slots = { s };
+                engine.setPlan (build ({ r }));
+                expectEquals (impulseArrival (engine, 1)[0], 15, "mode " + juce::String (mode));
+            }
+        }
+
+        beginTest ("bypassing mid-stream doesn't move the signal in time");
+        {
+            AudioEngine engine;
+            auto r = rack ("a", { 0 }, { 0 });
+            auto s = latentSlot (100);
+            r.slots = { s };
+            engine.setPlan (build ({ r }));
+            // Impulse enters the plugin in block 0; bypass flips on in block 1,
+            // while the impulse is still inside the plugin's delay.
+            auto arrivals = impulseArrival (engine, 1, 8, 64, [&] (int b) { s->userBypassed = (b >= 1); });
+            expectEquals (arrivals[0], 105);
+        }
+
+        beginTest ("dry fallback keeps the rack's latency");
+        {
+            AudioEngine engine;
+            auto r = rack ("a", { 0 }, { 0 });
+            r.critical = true;
+            r.slots = { latentSlot (10) };
+            engine.setPlan (build ({ r }));
+            r.runtime->dryFallback = true;
+            expectEquals (impulseArrival (engine, 1)[0], 15);
+        }
+
+        beginTest ("aligned racks: a plain rack waits for the latent one");
+        {
+            AudioEngine engine;
+            auto slow = rack ("slow", { 0 }, { 0 });
+            slow.slots = { latentSlot (24) };
+            auto fast = rack ("fast", { 0 }, { 1 });
+            engine.setPlan (build ({ slow, fast }));
+            auto a = impulseArrival (engine, 2);
+            expectEquals (a[0], 29);
+            expectEquals (a[1], 29);
+        }
+
+        beginTest ("alignment can be turned off");
+        {
+            AudioEngine engine;
+            auto slow = rack ("slow", { 0 }, { 0 });
+            slow.slots = { latentSlot (24) };
+            auto fast = rack ("fast", { 0 }, { 1 });
+            auto s = test::singleDevice ({ slow, fast }, Harness::numChannels, Harness::numChannels, Harness::block);
+            s.alignRacks = false;
+            auto built = buildPlan (s);
+            expectEquals (built.latencies["fast"], 0);
+            expectEquals (built.latencies["slow"], 24);
+            engine.setPlan (test::takePlan (built));
+            auto a = impulseArrival (engine, 2);
+            expectEquals (a[0], 29);
+            expectEquals (a[1], 5);
         }
 
         beginTest ("old plans are freed once the audio thread has moved on");

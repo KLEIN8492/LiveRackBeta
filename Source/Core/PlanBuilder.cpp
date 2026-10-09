@@ -11,6 +11,17 @@ int pluginChannels (const juce::AudioPluginInstance& p)
     return juce::jmax (p.getTotalNumInputChannels(), p.getTotalNumOutputChannels());
 }
 
+// Returns `line` if it can hold `delay` + one block, else a new, bigger one.
+// (A running plan keeps the old one alive; delay lines carry history across
+// rebuilds so an edit never blanks a compensated rack.)
+std::shared_ptr<DelayLine> ensureDelay (std::shared_ptr<DelayLine>& line, int delay, int block)
+{
+    const int needed = delay + block + 1;
+    if (line == nullptr || line->getCapacity() < needed)
+        line = std::make_shared<DelayLine> (2, needed);
+    return line;
+}
+
 // Rack channel fed by the k-th input port (or -1 = all rack channels).
 int rackChannelForInput (size_t k, size_t numPorts, int rackChannels)
 {
@@ -23,6 +34,13 @@ int rackChannelForOutput (size_t k, int rackChannels)
     return rackChannels == 1 ? 0 : (int) (k % (size_t) rackChannels);
 }
 } // namespace
+
+static BuildResult failed (const juce::String& error)
+{
+    BuildResult r;
+    r.error = error;
+    return r;
+}
 
 BuildResult buildPlan (const PlanSpec& spec)
 {
@@ -52,7 +70,7 @@ BuildResult buildPlan (const PlanSpec& spec)
         {
             auto it = indexOf.find (src);
             if (it == indexOf.end())
-                return { {}, {}, "Unknown source rack: " + src };
+                return failed ("Unknown source rack: " + src);
             sourcesOf[i].push_back (it->second);
         }
 
@@ -85,7 +103,7 @@ BuildResult buildPlan (const PlanSpec& spec)
     }
 
     if (placed != numRacks)
-        return { {}, {}, "Routing has a cycle: a bus feeds itself through other racks" };
+        return failed ("Routing has a cycle: a bus feeds itself through other racks");
 
     if (spec.devices.empty())
         return result; // nothing open: no plans, not an error
@@ -300,6 +318,23 @@ BuildResult buildPlan (const PlanSpec& spec)
             job.slots.push_back (std::move (sj));
         }
 
+        // Latency: input bridges (approximate: resampled, locked after warm-up) + plugins.
+        for (auto& tap : job.taps)
+            if (tap.fromImport)
+                job.inputLatency = juce::jmax (job.inputLatency,
+                                               juce::roundToInt (plan.imports[(size_t) tap.import].bridge->getStats().target));
+
+        for (auto& sj : job.slots)
+        {
+            sj.latency = juce::jmax (0, sj.slot->plugin->getLatencySamples());
+            job.pluginLatency += sj.latency;
+            if (sj.latency > 0)
+                sj.bypassDelay = ensureDelay (sj.slot->bypassDelay, sj.latency, plan.maxBlockSize);
+        }
+
+        if (job.pluginLatency > 0 && rs.runtime != nullptr)
+            job.dryDelay = ensureDelay (rs.runtime->dryDelay, job.pluginLatency, plan.maxBlockSize);
+
         job.buffer.setSize (bufferChannels, plan.maxBlockSize);
         job.dry.setSize (rc, plan.maxBlockSize);
         job.backup.setSize (bufferChannels, plan.maxBlockSize);
@@ -308,6 +343,24 @@ BuildResult buildPlan (const PlanSpec& spec)
         job.backup.clear();
         job.midi.ensureSize (4096);
     }
+
+    // ---- align every rack to the same total latency --------------------------
+    int common = 0;
+    if (spec.alignRacks)
+        for (auto& [dev, plan] : result.plans)
+            for (auto& job : plan->jobs)
+                common = juce::jmax (common, job.inputLatency + job.pluginLatency);
+
+    for (auto& [dev, plan] : result.plans)
+        for (auto& job : plan->jobs)
+        {
+            const int own = job.inputLatency + job.pluginLatency;
+            job.alignDelay = spec.alignRacks ? common - own : 0;
+            if (job.alignDelay > 0 && job.spec.runtime != nullptr)
+                job.outputDelay = ensureDelay (job.spec.runtime->outputDelay, job.alignDelay, plan->maxBlockSize);
+            result.latencies[job.spec.id] = own + job.alignDelay;
+        }
+    result.alignedLatency = common;
 
     return result;
 }

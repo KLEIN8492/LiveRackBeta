@@ -3,6 +3,7 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <atomic>
 #include "Watchdog.h"
+#include "DelayLine.h"
 
 namespace lr
 {
@@ -28,6 +29,11 @@ struct SlotRuntime
     int silentSamples = 0;    // audio thread only
 
     int inflightRecord = -1;  // index in the InflightLog, -1 if none
+
+    // Delays the slot's input by the plugin's latency while it's bypassed or
+    // faulted, so bypassing never shifts the rack's timing. Message thread
+    // replaces it (plans keep their own reference); audio uses the plan's.
+    std::shared_ptr<DelayLine> bypassDelay;
     SlotHealth health;        // audio thread only
 
     bool isActive() const noexcept
@@ -50,6 +56,9 @@ struct RackRuntime
     std::atomic<float> processMs   { 0.0f };
 
     RackHealth health;        // audio thread only
+
+    // Latency compensation: dry path (fallback / bypass) and output alignment.
+    std::shared_ptr<DelayLine> dryDelay, outputDelay;
 
     static void raisePeak (std::atomic<float>& meter, float value) noexcept
     {

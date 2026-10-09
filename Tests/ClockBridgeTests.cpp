@@ -163,6 +163,25 @@ public:
             expect (std::abs (oa[16] - 0.5f) < 1e-4f && std::abs (ob[16] - 0.5f) < 1e-4f);
         }
 
+        beginTest ("after warm-up the latency is locked: a late callback glitches once, delay unchanged");
+        {
+            ClockBridge bridge (1);
+            bridge.configure (32, 32);
+            bridge.setWarmupSamples (48000);           // 1 s
+            std::vector<float> a (32, 0.25f), o (32);
+            float* ins[] = { a.data() };
+            float* outs[] = { o.data() };
+
+            for (int i = 0; i < 4; ++i) bridge.write (ins, 32);
+            for (int i = 0; i < 2000; ++i) { bridge.write (ins, 32); bridge.read (outs, 32); } // > 1 s
+            const double locked = bridge.getStats().target;
+            expect (bridge.getStats().locked);
+
+            for (int i = 0; i < 6; ++i) bridge.read (outs, 32); // producer stalls: underrun
+            expectEquals (bridge.getStats().underruns, 1);
+            expectEquals (bridge.getStats().target, locked);
+        }
+
         beginTest ("add mode sums into the destination");
         {
             ClockBridge bridge (1);

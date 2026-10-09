@@ -11,9 +11,11 @@ namespace lr
 // consumer resamples with a ratio steered by a PI controller so the fill level
 // holds at a target that is as small as the callbacks' timing allows.
 //
-// Starts at the minimum target; on an underrun (a late callback) it outputs
-// silence, re-primes, and raises the target by half a producer block — one
-// glitch, then stable — up to a cap. Added latency ~= target samples.
+// Starts at the minimum target; during warm-up an underrun (a late callback)
+// outputs silence, re-primes and raises the target by half a producer block.
+// After warm-up the target — i.e. the added latency — is locked: a late
+// callback costs one glitch but never shifts the timing of the signal, which
+// matters for inserts summed on a console. Added latency ~= target samples.
 class ClockBridge
 {
 public:
@@ -21,6 +23,7 @@ public:
 
     // Message thread, before use (or with both devices stopped).
     void configure (int producerBlock, int consumerBlock);
+    void setWarmupSamples (juce::int64 samples) noexcept { warmupSamples = samples; } // default 10 s @ 48k
 
     int getNumChannels() const noexcept { return numChannels; }
 
@@ -35,6 +38,7 @@ public:
         double fill = 0, target = 0, ratioPpm = 0;
         int underruns = 0, overruns = 0;
         bool primed = false;
+        bool locked = false;   // warm-up over: latency fixed
     };
     Stats getStats() const noexcept;
 
@@ -56,11 +60,12 @@ private:
     double smoothedError = 0.0, integral = 0.0, ratio = 1.0;
     double target = 64.0, maxTarget = 512.0, step = 16.0;
     bool primed = false;
+    juce::int64 consumed = 0, warmupSamples = 480000;
 
     // Published for the UI.
     std::atomic<double> statFill { 0 }, statTarget { 0 }, statRatio { 1.0 };
     std::atomic<int> statUnderruns { 0 }, statOverruns { 0 };
-    std::atomic<bool> statPrimed { false };
+    std::atomic<bool> statPrimed { false }, statLocked { false };
 };
 
 } // namespace lr

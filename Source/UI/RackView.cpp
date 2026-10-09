@@ -348,8 +348,11 @@ void RackView::tick()
     }
     else if (rt != nullptr)
     {
-        text = "RUNNING on " + ctx.host.getHome (rack[ids::id].toString())
-             + "   rack cpu " + juce::String (rt->processMs.load(), 3) + " ms";
+        const auto id = rack[ids::id].toString();
+        const double ms = 1000.0 * ctx.host.getRackLatency (id) / ctx.host.getSampleRate();
+        text = "RUNNING on " + ctx.host.getHome (id)
+             + "   LAT " + juce::String (ms, 2) + " ms" + (ctx.host.isAligningRacks() ? " (aligned)" : "")
+             + "   cpu " + juce::String (rt->processMs.load(), 3) + " ms";
         colour = theme::accent;
     }
 

@@ -61,6 +61,7 @@ public:
         hub.setInflightLog (&session.getInflightLog());
 
         host = std::make_unique<PluginHost> (hub, session.getInflightLog());
+        host->setAlignRacks (settings.getBoolValue ("alignRacks", true));
         host->loadKnownPlugins (session.getPluginListFile());
 
         const auto scannerExe = juce::File::getSpecialLocation (juce::File::currentExecutableFile).getSiblingFile ("LiveRackScanner");

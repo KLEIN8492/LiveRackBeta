@@ -44,6 +44,7 @@ struct PlanSpec
     std::vector<DeviceSpec> devices;
     double sampleRate = 48000.0;
     BridgeProvider bridges;
+    bool alignRacks = true;   // delay every rack to the same total latency
 };
 
 // ---- The immutable, preallocated per-interface plan the audio thread runs ----
@@ -52,6 +53,8 @@ struct SlotJob
 {
     std::shared_ptr<SlotRuntime> slot;
     int procChannels = 1;               // channels handed to processBlock
+    int latency = 0;                    // plugin latency, samples
+    std::shared_ptr<DelayLine> bypassDelay; // set when latency > 0
 };
 
 // Where one rack input comes from.
@@ -71,6 +74,12 @@ struct RackJob
     std::vector<int> sourceJobs;        // bus sources on this interface (indices into jobs)
     std::vector<int> sourceImports;     // bus sources on other interfaces (indices into imports)
     std::vector<std::pair<int, int>> localOutputs; // (device output channel, rack channel)
+
+    // Latency (samples): bridge on the way in + plugins, then padding so every
+    // rack has the same total when racks are aligned. Constant whatever is
+    // bypassed or faulted.
+    int inputLatency = 0, pluginLatency = 0, alignDelay = 0;
+    std::shared_ptr<DelayLine> dryDelay, outputDelay;
     juce::AudioBuffer<float> buffer, dry, backup;
     juce::MidiBuffer midi;
 };
@@ -116,6 +125,8 @@ struct BuildResult
 {
     std::map<juce::String, std::unique_ptr<RenderPlan>> plans; // by interface name
     std::map<juce::String, juce::String> homes;                // rack id -> interface
+    std::map<juce::String, int> latencies;                     // rack id -> total samples
+    int alignedLatency = 0;                                    // common total when aligned
     juce::String error;
 };
 

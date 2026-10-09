@@ -15,7 +15,9 @@ class PluginWindow;
 // listens to the ValueTree, loads plugins asynchronously, prepares them for
 // the current device and rebuilds/swaps the RenderPlan after every change.
 class PluginHost final : private juce::ValueTree::Listener,
-                         private juce::AsyncUpdater
+                         private juce::AsyncUpdater,
+                         private juce::AudioProcessorListener,
+                         private juce::Timer
 {
 public:
     PluginHost (DeviceHub&, InflightLog&);
@@ -34,6 +36,10 @@ public:
     juce::String getSlotError (const juce::String& slotId) const;
     juce::String getRoutingError() const                        { return routingError; }
     juce::String getHome (const juce::String& rackId) const;   // interface a rack runs on
+    int getRackLatency (const juce::String& rackId) const;     // total samples, constant
+    int getAlignedLatency() const noexcept                      { return alignedLatency; }
+    void setAlignRacks (bool);
+    bool isAligningRacks() const noexcept                       { return alignRacks; }
     DeviceHub& getDevices() noexcept                            { return devices; }
 
     int getSlotLatencySamples (const juce::String& slotId) const;
@@ -71,6 +77,9 @@ private:
     void valueTreeChildOrderChanged (juce::ValueTree&, int, int) override;
     void valueTreeRedirected (juce::ValueTree&) override;
     void handleAsyncUpdate() override;
+    void timerCallback() override;
+    void audioProcessorParameterChanged (juce::AudioProcessor*, int, float) override {}
+    void audioProcessorChanged (juce::AudioProcessor*, const ChangeDetails&) override;
 
     DeviceHub& devices;
     InflightLog& inflight;
@@ -87,6 +96,11 @@ private:
     juce::String routingError;
     std::map<juce::String, juce::String> homes;
     std::map<juce::String, std::shared_ptr<ClockBridge>> bridges;
+    std::map<juce::String, std::pair<double, bool>> bridgeState;   // target, locked at last build
+    std::map<juce::String, int> latencies;
+    int alignedLatency = 0;
+    bool alignRacks = true;
+    std::atomic<bool> latencyDirty { false };
 
     double preparedRate = 0.0;
     int preparedBlock = 0;

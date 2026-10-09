@@ -48,9 +48,11 @@ void ClockBridge::configure (int producerBlock, int consumerBlock)
     maxTarget = consumerBlock + 6.0 * juce::jmax (producerBlock, consumerBlock);
 
     primed = false;
+    consumed = 0;
     smoothedError = integral = 0.0;
     ratio = 1.0;
     statTarget = target;
+    statLocked = false;
 }
 
 void ClockBridge::write (const float* const* channels, int numSamples) noexcept
@@ -118,10 +120,12 @@ void ClockBridge::read (float* const* dest, int numSamples, bool add) noexcept
     const double lastPos = readPos + (numSamples - 1) * ratio;
     if (std::floor (lastPos) + 2.0 >= (double) w)
     {
-        // Underrun: a callback came late. One glitch, then a safer target.
+        // Underrun: a callback came late. One glitch; during warm-up also a
+        // safer target, after it the latency stays exactly where it was.
         silence();
         primed = false;
-        target = juce::jmin (maxTarget, target + step);
+        if (consumed < warmupSamples)
+            target = juce::jmin (maxTarget, target + step);
         statUnderruns.fetch_add (1, std::memory_order_relaxed);
         statTarget.store (target, std::memory_order_relaxed);
         statPrimed.store (false, std::memory_order_relaxed);
@@ -142,11 +146,13 @@ void ClockBridge::read (float* const* dest, int numSamples, bool add) noexcept
     }
 
     readPos += numSamples * ratio;
+    consumed += numSamples;
 
     statFill.store (avail, std::memory_order_relaxed);
     statRatio.store (ratio, std::memory_order_relaxed);
     statTarget.store (target, std::memory_order_relaxed);
     statPrimed.store (true, std::memory_order_relaxed);
+    statLocked.store (consumed >= warmupSamples, std::memory_order_relaxed);
 }
 
 ClockBridge::Stats ClockBridge::getStats() const noexcept
@@ -158,6 +164,7 @@ ClockBridge::Stats ClockBridge::getStats() const noexcept
     s.underruns = statUnderruns.load();
     s.overruns = statOverruns.load();
     s.primed = statPrimed.load();
+    s.locked = statLocked.load();
     return s;
 }
 

@@ -311,11 +311,27 @@ void AudioEngine::processRack (RenderPlan& plan, RackJob& job, const Io& io)
     }
     RackRuntime::raisePeak (rt.inPeak, inPeak);
 
+    // The dry path is delayed by the plugins' latency, so falling back to dry
+    // (or bypassing the rack) never shifts the rack's timing.
+    if (job.dryDelay != nullptr)
+        job.dryDelay->push (job.dry, rc, n);
+
+    auto useDry = [&]
+    {
+        if (job.dryDelay != nullptr)
+            job.dryDelay->readLast (job.buffer, rc, n, job.pluginLatency);
+        else
+            for (int c = 0; c < rc; ++c)
+                job.buffer.copyFrom (c, 0, job.dry, c, 0, n);
+    };
+
     const bool passThrough = job.spec.bypassed
                           || globalBypass.load (std::memory_order_relaxed)
                           || rt.dryFallback.load (std::memory_order_relaxed);
 
-    if (! passThrough)
+    if (passThrough)
+        useDry();
+    else
         runSlots (job, n, plan.sampleRate);
 
     const double elapsed = ticksToSeconds (juce::Time::getHighResolutionTicks() - start);
@@ -341,9 +357,12 @@ void AudioEngine::processRack (RenderPlan& plan, RackJob& job, const Io& io)
         }
     }
 
-    if (rt.dryFallback.load (std::memory_order_relaxed))
-        for (int c = 0; c < rc; ++c)
-            job.buffer.copyFrom (c, 0, job.dry, c, 0, n);
+    if (! passThrough && rt.dryFallback.load (std::memory_order_relaxed))
+        useDry();
+
+    // Pad to the common latency so racks summed on the console stay aligned.
+    if (job.outputDelay != nullptr && job.alignDelay > 0)
+        job.outputDelay->process (job.buffer, rc, n, job.alignDelay);
 
     float outPeak = 0.0f;
     for (int c = 0; c < rc; ++c)
@@ -359,8 +378,18 @@ void AudioEngine::runSlots (RackJob& job, int n, double sampleRate)
     for (auto& sj : job.slots)
     {
         auto& slot = *sj.slot;
+
+        // A latent plugin's input is always fed into its bypass delay, so when
+        // it's bypassed or faulted the signal keeps exactly the same timing.
+        if (sj.bypassDelay != nullptr)
+            sj.bypassDelay->push (job.buffer, rc, n);
+
         if (! slot.isActive())
+        {
+            if (sj.bypassDelay != nullptr)
+                sj.bypassDelay->readLast (job.buffer, rc, n, sj.latency);
             continue;
+        }
 
         auto& plugin = *slot.plugin;
         if (slot.resetRequested.exchange (false, std::memory_order_relaxed))
@@ -408,9 +437,12 @@ void AudioEngine::runSlots (RackJob& job, int n, double sampleRate)
 
         const auto action = chooseFaultAction (job.spec.critical, verdict);
 
-        // Undo whatever the plugin did to this block.
-        for (int c = 0; c < rc; ++c)
-            job.buffer.copyFrom (c, 0, job.backup, c, 0, n);
+        // Undo whatever the plugin did to this block (keeping its latency).
+        if (sj.bypassDelay != nullptr)
+            sj.bypassDelay->readLast (job.buffer, rc, n, sj.latency);
+        else
+            for (int c = 0; c < rc; ++c)
+                job.buffer.copyFrom (c, 0, job.backup, c, 0, n);
 
         if (action.bypassSlot)
             slot.fault.store (verdict, std::memory_order_relaxed);
