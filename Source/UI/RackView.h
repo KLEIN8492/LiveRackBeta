@@ -23,8 +23,7 @@ private:
     class SlotRow;
 
     void rebuildRows();
-    void showInputMenu();
-    void showOutputMenu();
+    void showPortMenu (bool isInput);
     void showPluginBrowser();
     void deleteRack();
 

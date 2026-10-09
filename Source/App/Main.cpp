@@ -5,6 +5,7 @@
 #include "Host/PluginHost.h"
 #include "Host/OutOfProcessScanner.h"
 #include "UI/MainComponent.h"
+#include "UI/SettingsWindow.h"
 
 namespace lr
 {
@@ -53,13 +54,13 @@ public:
         options.osxLibrarySubFolder = "Application Support";
         appProperties.setStorageParameters (options);
 
-        auto deviceState = juce::parseXML (session.getDeviceFile());
-        const auto deviceError = snapshotMode ? juce::String()
-                                              : deviceManager.initialise (256, 256, deviceState.get(), true);
+        auto& settings = *appProperties.getUserSettings();
+        hub.setOpeningAllowed (! snapshotMode);
+        hub.setFormat (settings.getDoubleValue ("sampleRate", 48000.0), settings.getIntValue ("bufferSize", 64));
+        hub.setBoostEnabled (settings.getBoolValue ("lowLatencyBoost", true));
+        hub.setInflightLog (&session.getInflightLog());
 
-        engine.setInflightLog (&session.getInflightLog());
-        engine.setLowLatencyBoost (appProperties.getUserSettings()->getBoolValue ("lowLatencyBoost", true));
-        host = std::make_unique<PluginHost> (deviceManager, engine, session.getInflightLog());
+        host = std::make_unique<PluginHost> (hub, session.getInflightLog());
         host->loadKnownPlugins (session.getPluginListFile());
 
         const auto scannerExe = juce::File::getSpecialLocation (juce::File::currentExecutableFile).getSiblingFile ("LiveRackScanner");
@@ -69,6 +70,7 @@ public:
         auto show = show::loadFromFile (session.getAutosaveFile());
         if (! show.isValid())
             show = show::createEmpty();
+        migrate (show);
 
         juce::StringArray suspectNames;
         if (session.previousRunCrashed())
@@ -96,12 +98,10 @@ public:
         }
 
         host->setShow (show);
-        deviceManager.addAudioCallback (&engine);
-        session.watch (*host, engine);
-        diagnostics = std::make_unique<DiagnosticsLog> (deviceManager, engine,
-                                                        SessionGuard::getSupportDirectory().getChildFile ("diagnostics.log"));
+        session.watch (*host, hub);
+        diagnostics = std::make_unique<DiagnosticsLog> (hub, SessionGuard::getSupportDirectory().getChildFile ("diagnostics.log"));
 
-        ctx = std::make_unique<AppContext> (AppContext { *host, deviceManager, engine, session, *appProperties.getUserSettings() });
+        ctx = std::make_unique<AppContext> (AppContext { *host, hub, session, settings, [this] { showSettings(); } });
         auto* content = new MainComponent (*ctx);
         mainComponent = content;
         window = std::make_unique<MainWindow> ("LiveRack", content);
@@ -114,19 +114,22 @@ public:
                                            + ". Re-arm them when ready.",
                                  theme::warn);
         }
-        else if (deviceError.isNotEmpty())
-        {
-            content->showBanner ("Audio device problem: " + deviceError, theme::fault);
-        }
 
-        juce::MenuBarModel::setMacMainMenu (this);
+        commands.registerAllCommandsForTarget (this);
+        window->addKeyListener (commands.getKeyMappings());
+        setApplicationCommandManagerToWatch (&commands);
+        juce::PopupMenu appleMenu;
+        appleMenu.addCommandItem (&commands, cmdSettings);
+        juce::MenuBarModel::setMacMainMenu (this, &appleMenu);
 
         if (snapshotMode)
             juce::Timer::callAfterDelay (3000, [this]
             {
                 auto dir = juce::File (snapshotDir);
                 dir.createDirectory();
-                mainComponent->saveSnapshots (dir);
+                mainComponent->saveSnapshot (dir.getChildFile ("main.png"));
+                showSettings();
+                settingsWindow->getContent().saveSnapshots (dir);
                 juce::JUCEApplication::quit();
             });
     }
@@ -136,16 +139,14 @@ public:
         juce::MenuBarModel::setMacMainMenu (nullptr);
 
         session.saveNow();
-        if (auto xml = deviceManager.createStateXml())
-            xml->writeTo (session.getDeviceFile());
         host->saveKnownPlugins (session.getPluginListFile());
         host->getKnownPlugins().removeChangeListener (this);
 
         diagnostics.reset();
+        settingsWindow.reset();
         window.reset();
         ctx.reset();
-        deviceManager.removeAudioCallback (&engine);
-        deviceManager.closeAudioDevice();
+        hub.setWanted ({});   // stop every interface before the plugins go
         host.reset();
 
         session.endCleanly();
@@ -169,32 +170,84 @@ public:
     void anotherInstanceStarted (const juce::String&) override {}
 
 private:
-    // ---- menu ----
-    enum { newShow = 1, openShow, saveShow, saveShowAs };
+    // ---- commands & menu ----
+    enum CommandIDs { cmdSettings = 0x2001, cmdNew, cmdOpen, cmdSave, cmdSaveAs };
+
+    juce::ApplicationCommandTarget* getNextCommandTarget() override { return nullptr; }
+
+    void getAllCommands (juce::Array<juce::CommandID>& c) override
+    {
+        juce::JUCEApplication::getAllCommands (c);
+        c.addArray ({ cmdSettings, cmdNew, cmdOpen, cmdSave, cmdSaveAs });
+    }
+
+    void getCommandInfo (juce::CommandID id, juce::ApplicationCommandInfo& info) override
+    {
+        const auto cmd = juce::ModifierKeys::commandModifier;
+        switch (id)
+        {
+            case cmdSettings: info.setInfo ("Settings...", "Interfaces, routing, plugins, performance", "App", 0);
+                              info.addDefaultKeypress (',', cmd); break;
+            case cmdNew:      info.setInfo ("New Show", {}, "File", 0);        info.addDefaultKeypress ('n', cmd); break;
+            case cmdOpen:     info.setInfo ("Open Show...", {}, "File", 0);    info.addDefaultKeypress ('o', cmd); break;
+            case cmdSave:     info.setInfo ("Save Show", {}, "File", 0);       info.addDefaultKeypress ('s', cmd); break;
+            case cmdSaveAs:   info.setInfo ("Save Show As...", {}, "File", 0);
+                              info.addDefaultKeypress ('s', cmd | juce::ModifierKeys::shiftModifier); break;
+            default:          juce::JUCEApplication::getCommandInfo (id, info); break;
+        }
+    }
+
+    bool perform (const InvocationInfo& info) override
+    {
+        switch (info.commandID)
+        {
+            case cmdSettings: showSettings(); return true;
+            case cmdNew:      confirmNewShow(); return true;
+            case cmdOpen:     openShowFile(); return true;
+            case cmdSave:     currentFile.existsAsFile() ? saveTo (currentFile) : saveAs(); return true;
+            case cmdSaveAs:   saveAs(); return true;
+            default:          return juce::JUCEApplication::perform (info);
+        }
+    }
 
     juce::StringArray getMenuBarNames() override { return { "File" }; }
 
     juce::PopupMenu getMenuForIndex (int, const juce::String&) override
     {
         juce::PopupMenu m;
-        m.addItem (newShow, "New Show");
-        m.addItem (openShow, "Open Show...");
+        m.addCommandItem (&commands, cmdNew);
+        m.addCommandItem (&commands, cmdOpen);
         m.addSeparator();
-        m.addItem (saveShow, "Save Show");
-        m.addItem (saveShowAs, "Save Show As...");
+        m.addCommandItem (&commands, cmdSave);
+        m.addCommandItem (&commands, cmdSaveAs);
+        m.addSeparator();
+        m.addCommandItem (&commands, cmdSettings);
         return m;
     }
 
-    void menuItemSelected (int id, int) override
+    void menuItemSelected (int, int) override {}
+
+    void showSettings()
     {
-        switch (id)
+        if (settingsWindow == nullptr)
         {
-            case newShow:    confirmNewShow(); break;
-            case openShow:   openShowFile(); break;
-            case saveShow:   currentFile.existsAsFile() ? saveTo (currentFile) : saveAs(); break;
-            case saveShowAs: saveAs(); break;
-            default: break;
+            settingsWindow = std::make_unique<SettingsWindow> (*ctx);
+            settingsWindow->addKeyListener (commands.getKeyMappings());
         }
+        settingsWindow->setVisible (true);
+        settingsWindow->toFront (true);
+    }
+
+    // v1 shows stored bare channel numbers for the one device in device.xml.
+    void migrate (juce::ValueTree show)
+    {
+        juce::String in, out;
+        if (auto xml = juce::parseXML (session.getDeviceFile()))
+        {
+            in = xml->getStringAttribute ("audioInputDeviceName");
+            out = xml->getStringAttribute ("audioOutputDeviceName");
+        }
+        show::migrateLegacyPorts (show, in, out);
     }
 
     void confirmNewShow()
@@ -229,6 +282,7 @@ private:
                     return;
                 }
                 currentFile = file;
+                migrate (loaded);
                 loadShow (loaded);
             });
     }
@@ -283,11 +337,12 @@ private:
 
     SessionGuard session;
     juce::ApplicationProperties appProperties;
-    juce::AudioDeviceManager deviceManager;
-    AudioEngine engine;
+    DeviceHub hub;
+    juce::ApplicationCommandManager commands;
     std::unique_ptr<PluginHost> host;
     std::unique_ptr<AppContext> ctx;
     std::unique_ptr<MainWindow> window;
+    std::unique_ptr<SettingsWindow> settingsWindow;
     MainComponent* mainComponent = nullptr;
     std::unique_ptr<juce::FileChooser> chooser;
     std::unique_ptr<DiagnosticsLog> diagnostics;

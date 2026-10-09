@@ -10,21 +10,20 @@ namespace lr
 struct AppContext
 {
     PluginHost& host;
-    juce::AudioDeviceManager& devices;
-    AudioEngine& engine;
+    DeviceHub& devices;
     SessionGuard& session;
     juce::PropertiesFile& settings;
+    std::function<void()> openSettings;
 
-    juce::StringArray inputNames() const
+    // Interfaces whose channels a rack refers to but that aren't open.
+    juce::StringArray missingInterfaces (const juce::ValueTree& rack) const
     {
-        auto* d = devices.getCurrentAudioDevice();
-        return d != nullptr ? d->getInputChannelNames() : juce::StringArray();
-    }
-
-    juce::StringArray outputNames() const
-    {
-        auto* d = devices.getCurrentAudioDevice();
-        return d != nullptr ? d->getOutputChannelNames() : juce::StringArray();
+        juce::StringArray missing;
+        for (auto& prop : { ids::inputs, ids::outputs })
+            for (auto& p : show::getPorts (rack, prop))
+                if (devices.deviceFor (p.device) == nullptr)
+                    missing.addIfNotAlreadyThere (p.device);
+        return missing;
     }
 };
 

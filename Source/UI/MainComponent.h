@@ -4,11 +4,11 @@
 #include "TopBar.h"
 #include "RackList.h"
 #include "RackView.h"
-#include "RoutingView.h"
-#include "SettingsView.h"
 
 namespace lr
 {
+// The main window: status strip, rack list and the selected rack.
+// Everything else lives in the Settings window (⌘,).
 class MainComponent final : public juce::Component, private juce::Timer
 {
 public:
@@ -17,14 +17,13 @@ public:
 
     void showBanner (const juce::String& text, juce::Colour colour);
     void showChanged();   // a new show was loaded
-    void saveSnapshots (const juce::File& dir);  // one PNG per view (debug / docs)
+    void saveSnapshot (const juce::File& png);   // debug / docs
 
     void paint (juce::Graphics&) override;
     void resized() override;
 
 private:
     void timerCallback() override;
-    void setView (TopBar::View);
 
     AppContext& ctx;
     theme::LookAndFeel lookAndFeel;
@@ -33,12 +32,9 @@ private:
     TopBar topBar;
     RackList rackList;
     RackView rackView;
-    RoutingView routingView;
-    std::unique_ptr<SettingsView> settingsView;
 
     juce::String bannerText;
     juce::Colour bannerColour;
     juce::TextButton bannerClose { "DISMISS" };
-    TopBar::View view = TopBar::racksView;
 };
 } // namespace lr

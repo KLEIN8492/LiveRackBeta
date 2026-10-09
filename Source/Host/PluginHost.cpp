@@ -5,30 +5,50 @@
 
 namespace lr
 {
-PluginHost::PluginHost (juce::AudioDeviceManager& dm, AudioEngine& e, InflightLog& log)
-    : deviceManager (dm), engine (e), inflight (log)
+PluginHost::PluginHost (DeviceHub& hub, InflightLog& log)
+    : devices (hub), inflight (log)
 {
     juce::addDefaultFormatsToManager (formatManager);
-    deviceManager.addChangeListener (this);
-    ensureAllChannelsActive();
+    preparedRate = devices.getSampleRate();
+    preparedBlock = juce::jmax (devices.getBlockSize(), devices.getMaxOpenBlockSize());
 
-    if (auto* device = deviceManager.getCurrentAudioDevice())
+    devices.onChanged = [this, token = std::weak_ptr<bool> (alive)]
     {
-        preparedRate = device->getCurrentSampleRate();
-        preparedBlock = device->getCurrentBufferSizeSamples();
-    }
+        if (! token.expired())
+            devicesChanged();
+    };
+}
+
+void PluginHost::clearAllPlans()
+{
+    for (auto& o : devices.getOpen())
+        o->engine->clearPlan();
+}
+
+bool PluginHost::waitForEngines()
+{
+    bool ok = true;
+    for (auto& o : devices.getOpen())
+        ok &= o->engine->waitUntilOldPlansReleased (1000);
+    return ok;
+}
+
+juce::String PluginHost::getHome (const juce::String& rackId) const
+{
+    auto it = homes.find (rackId);
+    return it != homes.end() ? it->second : juce::String();
 }
 
 PluginHost::~PluginHost()
 {
     *alive = false;
     cancelPendingUpdate();
-    deviceManager.removeChangeListener (this);
+    devices.onChanged = nullptr;
     show.removeListener (this);
     windows.clear();
 
-    engine.clearPlan();
-    engine.waitUntilOldPlansReleased (1000);
+    clearAllPlans();
+    waitForEngines();
 
     for (auto& [id, slot] : slots)
         inflight.releaseRecord (slot->inflightRecord);
@@ -56,9 +76,9 @@ void PluginHost::setShow (juce::ValueTree newShow)
     show.removeListener (this);
     windows.clear();
 
-    // Take every plugin out of the engine before dropping the old show.
-    engine.clearPlan();
-    engine.waitUntilOldPlansReleased (1000);
+    // Take every plugin out of the engines before dropping the old show.
+    clearAllPlans();
+    waitForEngines();
 
     for (auto& [id, slot] : slots)
         inflight.releaseRecord (slot->inflightRecord);
@@ -173,9 +193,6 @@ void PluginHost::prepare (juce::AudioPluginInstance& plugin)
     plugin.setRateAndBufferSizeDetails (rate, block);
     plugin.setNonRealtime (false);
     plugin.prepareToPlay (rate, block);
-
-    if (auto* device = deviceManager.getCurrentAudioDevice())
-        plugin.audioWorkgroupContextChanged (device->getWorkgroup());
 }
 
 // Takes the given slots out of the running plan, waits until the audio thread
@@ -186,7 +203,7 @@ void PluginHost::reconfigureSlots (const std::vector<juce::String>& slotIds)
         excluded.insert (id);
 
     rebuildPlan();
-    const bool released = engine.waitUntilOldPlansReleased (1000);
+    const bool released = waitForEngines();
 
     for (auto& id : slotIds)
     {
@@ -204,41 +221,45 @@ void PluginHost::reconfigureSlots (const std::vector<juce::String>& slotIds)
     rebuildPlan();
 }
 
-void PluginHost::ensureAllChannelsActive()
-{
-    auto* device = deviceManager.getCurrentAudioDevice();
-    if (device == nullptr)
-        return;
-
-    const int numIn = device->getInputChannelNames().size();
-    const int numOut = device->getOutputChannelNames().size();
-
-    if (device->getActiveInputChannels().countNumberOfSetBits() == numIn
-        && device->getActiveOutputChannels().countNumberOfSetBits() == numOut)
-        return;
-
-    auto setup = deviceManager.getAudioDeviceSetup();
-    setup.useDefaultInputChannels = false;
-    setup.useDefaultOutputChannels = false;
-    setup.inputChannels.clear();
-    setup.outputChannels.clear();
-    setup.inputChannels.setRange (0, numIn, true);
-    setup.outputChannels.setRange (0, numOut, true);
-    deviceManager.setAudioDeviceSetup (setup, true);
-}
-
 // ---------------------------------------------------------------------------
 
 void PluginHost::rebuildPlan()
 {
-    PlanSpec spec;
-    if (auto* device = deviceManager.getCurrentAudioDevice())
+    // Open every interface a rack refers to (and close the rest).
+    std::set<juce::String> wanted;
+    for (auto rack : show::getRacks (show))
+        for (auto& prop : { ids::inputs, ids::outputs })
+            for (auto& p : show::getPorts (rack, prop))
+                wanted.insert (p.device);
+    devices.setWanted (wanted);
+
+    // A block size bigger than the plugins were prepared for needs a re-prepare.
+    if (devices.getMaxOpenBlockSize() > preparedBlock || ! juce::exactlyEqual (devices.getSampleRate(), preparedRate))
     {
-        spec.numDeviceInputs = device->getActiveInputChannels().countNumberOfSetBits();
-        spec.numDeviceOutputs = device->getActiveOutputChannels().countNumberOfSetBits();
+        devicesChanged();
+        return;
     }
-    spec.maxBlockSize = preparedBlock > 0 ? preparedBlock : 512;
-    spec.sampleRate = preparedRate > 0 ? preparedRate : 48000.0;
+
+    PlanSpec spec;
+    spec.sampleRate = preparedRate;
+    for (auto& o : devices.getOpen())
+        spec.devices.push_back ({ o->name,
+                                  o->device->getInputChannelNames().size(),
+                                  o->device->getOutputChannelNames().size(),
+                                  o->device->getCurrentBufferSizeSamples() });
+
+    std::set<juce::String> used;
+    spec.bridges = [this, &used] (const juce::String& key, int channels, int producerBlock, int consumerBlock)
+    {
+        used.insert (key);
+        auto& b = bridges[key];
+        if (b == nullptr)
+        {
+            b = std::make_shared<ClockBridge> (channels);
+            b->configure (producerBlock, consumerBlock);
+        }
+        return b;
+    };
 
     for (auto rack : show::getRacks (show))
     {
@@ -250,8 +271,8 @@ void PluginHost::rebuildPlan()
         RackSpec rs;
         rs.id = rackId;
         rs.numChannels = (int) rack[ids::channels];
-        rs.inputs = show::getChannels (rack, ids::inputs);
-        rs.outputs = show::getChannels (rack, ids::outputs);
+        rs.inputs = show::getPorts (rack, ids::inputs);
+        rs.outputs = show::getPorts (rack, ids::outputs);
         for (auto& src : show::parseIds (rack[ids::sources].toString()))
             rs.sources.push_back (src);
         rs.critical = (bool) rack[ids::critical];
@@ -272,8 +293,19 @@ void PluginHost::rebuildPlan()
     auto result = buildPlan (spec);
     routingError = result.error;
 
-    if (result.plan != nullptr)
-        engine.setPlan (std::move (result.plan));
+    if (result.error.isEmpty())
+    {
+        homes = result.homes;
+        for (auto& o : devices.getOpen())
+        {
+            auto it = result.plans.find (o->name);
+            o->engine->setPlan (it != result.plans.end() ? std::move (it->second) : nullptr);
+        }
+
+        // Forget bridges no plan uses any more (running plans keep their own refs).
+        for (auto it = bridges.begin(); it != bridges.end();)
+            it = used.count (it->first) ? std::next (it) : bridges.erase (it);
+    }
 
     notify();
 }
@@ -289,19 +321,10 @@ void PluginHost::handleAsyncUpdate()
     rebuildPlan();
 }
 
-void PluginHost::changeListenerCallback (juce::ChangeBroadcaster*)
+void PluginHost::devicesChanged()
 {
-    auto* device = deviceManager.getCurrentAudioDevice();
-    if (device == nullptr)
-    {
-        rebuildPlan();
-        return;
-    }
-
-    ensureAllChannelsActive();
-
-    const double rate = device->getCurrentSampleRate();
-    const int block = device->getCurrentBufferSizeSamples();
+    const double rate = devices.getSampleRate();
+    const int block = juce::jmax (devices.getBlockSize(), devices.getMaxOpenBlockSize());
 
     if (! juce::exactlyEqual (rate, preparedRate) || block != preparedBlock)
     {
@@ -311,7 +334,7 @@ void PluginHost::changeListenerCallback (juce::ChangeBroadcaster*)
         std::vector<juce::String> all;
         for (auto& [id, slot] : slots)
             all.push_back (id);
-        reconfigureSlots (all);
+        reconfigureSlots (all); // rebuilds the plans
     }
     else
     {

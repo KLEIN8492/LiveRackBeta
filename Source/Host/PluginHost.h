@@ -1,7 +1,7 @@
 #pragma once
 
 #include <juce_audio_utils/juce_audio_utils.h>
-#include "Core/AudioEngine.h"
+#include "Core/DeviceHub.h"
 #include "Core/InflightLog.h"
 #include "Core/ShowModel.h"
 #include <map>
@@ -15,11 +15,10 @@ class PluginWindow;
 // listens to the ValueTree, loads plugins asynchronously, prepares them for
 // the current device and rebuilds/swaps the RenderPlan after every change.
 class PluginHost final : private juce::ValueTree::Listener,
-                         private juce::AsyncUpdater,
-                         private juce::ChangeListener
+                         private juce::AsyncUpdater
 {
 public:
-    PluginHost (juce::AudioDeviceManager&, AudioEngine&, InflightLog&);
+    PluginHost (DeviceHub&, InflightLog&);
     ~PluginHost() override;
 
     juce::AudioPluginFormatManager& getFormatManager() noexcept { return formatManager; }
@@ -34,6 +33,8 @@ public:
     std::shared_ptr<RackRuntime> getRack (const juce::String& rackId) const;
     juce::String getSlotError (const juce::String& slotId) const;
     juce::String getRoutingError() const                        { return routingError; }
+    juce::String getHome (const juce::String& rackId) const;   // interface a rack runs on
+    DeviceHub& getDevices() noexcept                            { return devices; }
 
     int getSlotLatencySamples (const juce::String& slotId) const;
     double getSampleRate() const;
@@ -57,7 +58,9 @@ private:
     void configure (juce::AudioPluginInstance&, int rackChannels);
     void prepare (juce::AudioPluginInstance&);
     void reconfigureSlots (const std::vector<juce::String>& slotIds);
-    void ensureAllChannelsActive();
+    void devicesChanged();
+    void clearAllPlans();
+    bool waitForEngines();
 
     void rebuildPlan();
     void notify();
@@ -68,10 +71,8 @@ private:
     void valueTreeChildOrderChanged (juce::ValueTree&, int, int) override;
     void valueTreeRedirected (juce::ValueTree&) override;
     void handleAsyncUpdate() override;
-    void changeListenerCallback (juce::ChangeBroadcaster*) override;
 
-    juce::AudioDeviceManager& deviceManager;
-    AudioEngine& engine;
+    DeviceHub& devices;
     InflightLog& inflight;
 
     juce::AudioPluginFormatManager formatManager;
@@ -84,6 +85,8 @@ private:
     std::map<juce::String, std::unique_ptr<PluginWindow>> windows;
     std::set<juce::String> excluded;   // slots temporarily kept out of the plan
     juce::String routingError;
+    std::map<juce::String, juce::String> homes;
+    std::map<juce::String, std::shared_ptr<ClockBridge>> bridges;
 
     double preparedRate = 0.0;
     int preparedBlock = 0;

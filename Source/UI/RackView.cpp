@@ -234,8 +234,8 @@ RackView::RackView (AppContext& c) : ctx (c)
     addAndMakeVisible (criticalToggle);
     addAndMakeVisible (bypassToggle);
 
-    inputButton.onClick = [this] { showInputMenu(); };
-    outputButton.onClick = [this] { showOutputMenu(); };
+    inputButton.onClick = [this] { showPortMenu (true); };
+    outputButton.onClick = [this] { showPortMenu (false); };
     addAndMakeVisible (inputButton);
     addAndMakeVisible (outputButton);
 
@@ -331,7 +331,12 @@ void RackView::tick()
         text = "DRY FALLBACK  -  plugin fault, rack is passing its clean input";
         colour = theme::fault;
     }
-    else if ((bool) rack[ids::bypassed] || ctx.engine.isGlobalBypassed())
+    else if (const auto missing = ctx.missingInterfaces (rack); ! missing.isEmpty())
+    {
+        text = "MISSING INTERFACE  -  " + missing.joinIntoString (", ") + " not connected";
+        colour = theme::fault;
+    }
+    else if ((bool) rack[ids::bypassed] || ctx.devices.isGlobalBypassed())
     {
         text = "BYPASSED  -  passing input through";
         colour = theme::warn;
@@ -343,7 +348,8 @@ void RackView::tick()
     }
     else if (rt != nullptr)
     {
-        text = "RUNNING   rack cpu " + juce::String (rt->processMs.load(), 3) + " ms";
+        text = "RUNNING on " + ctx.host.getHome (rack[ids::id].toString())
+             + "   rack cpu " + juce::String (rt->processMs.load(), 3) + " ms";
         colour = theme::accent;
     }
 
@@ -358,83 +364,112 @@ void RackView::tick()
     }
 }
 
-void RackView::showInputMenu()
+// Every interface on the Mac, each with a side menu of its channels.
+// Picking a channel on an interface that isn't open yet opens it.
+void RackView::showPortMenu (bool isInput)
 {
+    auto& hub = ctx.devices;
+    const auto& prop = isInput ? ids::inputs : ids::outputs;
+    const auto current = show::getPorts (rack, prop);
     auto show = ctx.host.getShow();
-    const auto names = ctx.inputNames();
-    auto inputs = show::getChannels (rack, ids::inputs);
-    auto sources = show::parseIds (rack[ids::sources].toString());
+    const auto sources = show::parseIds (rack[ids::sources].toString());
 
-    juce::PopupMenu menu;
-    menu.addSectionHeader ("Device inputs");
-    for (int i = 0; i < names.size(); ++i)
-        menu.addItem (1 + i, juce::String (i + 1) + "   " + names[i], true,
-                      std::find (inputs.begin(), inputs.end(), i) != inputs.end());
-
-    juce::PopupMenu busMenu;
-    int k = 0;
-    for (auto other : show::getRacks (show))
+    auto inUse = [&] (const juce::String& device, int ch)
     {
-        ++k;
-        if (other == rack)
-            continue;
-        busMenu.addItem (10000 + k, other[ids::name].toString(), true, sources.contains (other[ids::id].toString()));
-    }
-    menu.addSeparator();
-    menu.addSubMenu ("Bus: sum of other racks", busMenu);
-
-    menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (inputButton),
-        [this, inputs, sources, show] (int result) mutable
-        {
-            if (result <= 0 || ! rack.isValid())
-                return;
-
-            if (result >= 10000)
-            {
-                const auto id = show::getRacks (show).getChild (result - 10001)[ids::id].toString();
-                if (sources.contains (id)) sources.removeString (id);
-                else                       sources.add (id);
-                rack.setProperty (ids::sources, sources.joinIntoString (","), nullptr);
-                show::setChannels (rack, ids::inputs, {});
-            }
-            else
-            {
-                const int ch = result - 1;
-                auto it = std::find (inputs.begin(), inputs.end(), ch);
-                if (it != inputs.end()) inputs.erase (it);
-                else                    inputs.push_back (ch);
-                std::sort (inputs.begin(), inputs.end());
-                show::setChannels (rack, ids::inputs, inputs);
-                rack.setProperty (ids::sources, "", nullptr);
-            }
-            juce::MessageManager::callAsync ([this] { showInputMenu(); }); // keep the menu up for multi-select
-        });
-}
-
-void RackView::showOutputMenu()
-{
-    const auto names = ctx.outputNames();
-    auto outputs = show::getChannels (rack, ids::outputs);
+        return std::find (current.begin(), current.end(), PortRef { device, ch }) != current.end();
+    };
 
     juce::PopupMenu menu;
-    menu.addSectionHeader ("Device outputs");
-    for (int i = 0; i < names.size(); ++i)
-        menu.addItem (1 + i, juce::String (i + 1) + "   " + names[i], true,
-                      std::find (outputs.begin(), outputs.end(), i) != outputs.end());
+    menu.addSectionHeader (isInput ? "INPUT  -  INTERFACES" : "OUTPUT  -  INTERFACES");
 
-    menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (outputButton),
-        [this, outputs] (int result) mutable
+    std::vector<PortRef> lookup;   // item id - 1 -> port
+    juce::StringArray listed;
+
+    for (auto& info : hub.getAvailable())
+    {
+        const auto& names = isInput ? info.inputs : info.outputs;
+        if (names.isEmpty())
+            continue;
+
+        juce::PopupMenu channels;
+        int ticked = 0;
+        for (int ch = 0; ch < names.size(); ++ch)
+        {
+            lookup.push_back ({ info.name, ch });
+            const bool on = inUse (info.name, ch);
+            ticked += on ? 1 : 0;
+            channels.addItem ((int) lookup.size(), juce::String (ch + 1).paddedLeft (' ', 3) + "   " + names[ch], true, on);
+        }
+
+        juce::String label = info.name;
+        if (ticked > 0)                            label << "   [" << ticked << "]";
+        else if (hub.deviceFor (info.name) != nullptr) label << "   (open)";
+        menu.addSubMenu (label, channels, true, nullptr, ticked > 0);
+        listed.add (info.name);
+    }
+
+    // Interfaces this rack uses that aren't connected right now.
+    for (auto& p : current)
+        if (! listed.contains (p.device))
+        {
+            menu.addItem (-1, p.device + "   (MISSING: not connected)", false, true);
+            listed.add (p.device);
+        }
+
+    constexpr int busBase = 100000;
+    if (isInput)
+    {
+        juce::PopupMenu bus;
+        int k = 0;
+        for (auto other : show::getRacks (show))
+        {
+            ++k;
+            if (other != rack)
+                bus.addItem (busBase + k, other[ids::name].toString(), true, sources.contains (other[ids::id].toString()));
+        }
+        menu.addSeparator();
+        menu.addSubMenu ("BUS  -  sum of other racks", bus, true, nullptr, ! sources.isEmpty());
+    }
+
+    menu.addSeparator();
+    constexpr int clearId = busBase * 2;
+    menu.addItem (clearId, isInput ? "Clear input" : "Clear output", ! current.empty() || ! sources.isEmpty());
+
+    auto& target = isInput ? inputButton : outputButton;
+    menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (target).withMinimumWidth (target.getWidth()),
+        [this, isInput, lookup, show] (int result) mutable
         {
             if (result <= 0 || ! rack.isValid())
                 return;
 
-            const int ch = result - 1;
-            auto it = std::find (outputs.begin(), outputs.end(), ch);
-            if (it != outputs.end()) outputs.erase (it);
-            else                     outputs.push_back (ch);
-            std::sort (outputs.begin(), outputs.end());
-            show::setChannels (rack, ids::outputs, outputs);
-            juce::MessageManager::callAsync ([this] { showOutputMenu(); });
+            const auto& which = isInput ? ids::inputs : ids::outputs;
+
+            if (result == clearId)
+            {
+                show::setPorts (rack, which, {});
+                if (isInput)
+                    rack.setProperty (ids::sources, "", nullptr);
+                return;
+            }
+
+            if (isInput && result > busBase)
+            {
+                auto srcs = show::parseIds (rack[ids::sources].toString());
+                const auto id = show::getRacks (show).getChild (result - busBase - 1)[ids::id].toString();
+                if (srcs.contains (id)) srcs.removeString (id);
+                else                    srcs.add (id);
+                rack.setProperty (ids::sources, srcs.joinIntoString (","), nullptr);
+                show::setPorts (rack, ids::inputs, {});
+                return;
+            }
+
+            auto ports = show::getPorts (rack, which);
+            togglePort (ports, lookup[(size_t) result - 1]);
+            show::setPorts (rack, which, ports);
+            if (isInput)
+                rack.setProperty (ids::sources, "", nullptr);
+
+            juce::MessageManager::callAsync ([this, isInput] { showPortMenu (isInput); }); // keep it up for multi-select
         });
 }
 

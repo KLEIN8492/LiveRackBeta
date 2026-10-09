@@ -1,4 +1,5 @@
 #include "RackList.h"
+#include <set>
 
 namespace lr
 {
@@ -21,25 +22,36 @@ void RackList::addRack (int channels)
     const int n = show::getRacks (show).getNumChildren() + 1;
     auto rack = show::addRack (show, (channels == 1 ? "Channel " : "Stereo ") + juce::String (n), channels);
 
-    // Sensible default routing: next free input(s) straight to the same output(s).
-    const int numIn = ctx.inputNames().size(), numOut = ctx.outputNames().size();
-    std::vector<int> used;
-    for (auto r : show::getRacks (show))
-        for (int ch : show::getChannels (r, ids::inputs))
-            used.push_back (ch);
+    // Default routing: the next free input(s) on an interface already in use
+    // (or the first one with inputs), straight to the same-numbered outputs.
+    auto& hub = ctx.devices;
+    const DeviceHub::Info* iface = nullptr;
+    for (auto& o : hub.getOpen())
+        if ((iface = hub.findAvailable (o->name)) != nullptr && ! iface->inputs.isEmpty())
+            break;
+    if (iface == nullptr || iface->inputs.isEmpty())
+        for (auto& info : hub.getAvailable())
+            if (! info.inputs.isEmpty()) { iface = &info; break; }
 
-    std::vector<int> chosen;
-    for (int ch = 0; ch < numIn && (int) chosen.size() < channels; ++ch)
-        if (std::find (used.begin(), used.end(), ch) == used.end())
-            chosen.push_back (ch);
+    if (iface != nullptr)
+    {
+        std::set<int> used;
+        for (auto r : show::getRacks (show))
+            for (auto& p : show::getPorts (r, ids::inputs))
+                if (p.device == iface->name)
+                    used.insert (p.channel);
 
-    show::setChannels (rack, ids::inputs, chosen);
+        std::vector<PortRef> ins, outs;
+        for (int ch = 0; ch < iface->inputs.size() && (int) ins.size() < channels; ++ch)
+            if (used.count (ch) == 0)
+                ins.push_back ({ iface->name, ch });
+        for (auto& p : ins)
+            if (p.channel < iface->outputs.size())
+                outs.push_back (p);
 
-    std::vector<int> outs;
-    for (int ch : chosen)
-        if (ch < numOut)
-            outs.push_back (ch);
-    show::setChannels (rack, ids::outputs, outs);
+        show::setPorts (rack, ids::inputs, ins);
+        show::setPorts (rack, ids::outputs, outs);
+    }
 
     refresh();
     selectRack (rack[ids::id].toString());

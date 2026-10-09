@@ -1,7 +1,7 @@
 #pragma once
 
 #include <juce_audio_devices/juce_audio_devices.h>
-#include "Core/AudioEngine.h"
+#include "Core/DeviceHub.h"
 
 namespace lr
 {
@@ -12,50 +12,52 @@ namespace lr
 class DiagnosticsLog final : private juce::Timer
 {
 public:
-    DiagnosticsLog (juce::AudioDeviceManager& dm, AudioEngine& e, const juce::File& file)
-        : devices (dm), engine (e), out (file)
+    DiagnosticsLog (DeviceHub& h, const juce::File& file) : hub (h), out (file)
     {
-        out.replaceWithText ("time  device | sr buf | workers | dsp% | worstCallback/period us | worstGap us | dropouts(+new)\n");
+        out.replaceWithText ("time  interface | sr buf | workers | dsp% | worstCallback/period us | worstGap us | dropouts(+new)\n");
         startTimer (1000);
     }
 
 private:
     void timerCallback() override
     {
-        juce::String line = juce::Time::getCurrentTime().toString (false, true, true, true) + "  ";
-        const auto callbackUs = engine.maxCallbackUs.exchange (0);
-        const auto gapUs = engine.maxGapUs.exchange (0);
+        const auto time = juce::Time::getCurrentTime().toString (false, true, true, true) + "  ";
+        juce::String text;
 
-        if (auto* d = devices.getCurrentAudioDevice())
+        if (hub.getOpen().empty())
+            text << time << "no interface open" << (hub.isBoostActive() ? "" : "") << "\n";
+
+        for (auto& o : hub.getOpen())
         {
+            auto& engine = *o->engine;
+            auto* d = o->device.get();
+            const auto callbackUs = engine.maxCallbackUs.exchange (0);
+            const auto gapUs = engine.maxGapUs.exchange (0);
             const double sr = d->getCurrentSampleRate();
             const int bs = d->getCurrentBufferSizeSamples();
             const int periodUs = sr > 0 ? (int) (1.0e6 * bs / sr) : 0;
             const int xruns = d->getXRunCount();
+            auto& last = lastXruns[o->name];
 
-            line << d->getTypeName() << ":" << d->getName()
+            text << time << d->getName()
                  << " | " << (int) sr << " " << bs << " (cb " << engine.lastNumSamples.load() << ")"
-                 << " | w" << engine.getNumWorkers() << (engine.isBoostActive() ? " boost" : "")
+                 << " | w" << engine.getNumWorkers() << (hub.isBoostActive() ? " boost" : "")
                  << " | " << juce::String (engine.getCpuLoad() * 100.0, 1)
                  << " | " << (int) callbackUs << "/" << periodUs
                  << " | " << (int) gapUs
-                 << " | " << xruns << " (+" << juce::jmax (0, xruns - lastXruns) << ")";
+                 << " | " << xruns << " (+" << juce::jmax (0, xruns - last) << ")";
 
-            if (gapUs > (uint32_t) periodUs * 2)  line << "  LATE-CALLBACK";
-            if (callbackUs > (uint32_t) periodUs) line << "  OVERRUN";
-            lastXruns = xruns;
-        }
-        else
-        {
-            line << "no device";
+            if (gapUs > (uint32_t) periodUs * 2)  text << "  LATE-CALLBACK";
+            if (callbackUs > (uint32_t) periodUs) text << "  OVERRUN";
+            text << "\n";
+            last = xruns;
         }
 
-        out.appendText (line + "\n");
+        out.appendText (text);
     }
 
-    juce::AudioDeviceManager& devices;
-    AudioEngine& engine;
+    DeviceHub& hub;
     juce::File out;
-    int lastXruns = 0;
+    std::map<juce::String, int> lastXruns;
 };
 } // namespace lr

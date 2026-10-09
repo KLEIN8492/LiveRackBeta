@@ -33,6 +33,7 @@ add_library(LiveRackCore STATIC
     Source/Core/MacActivity.mm
     Source/Core/PortRef.cpp
     Source/Core/ClockBridge.cpp
+    Source/Core/DeviceHub.cpp
 )
 
 target_link_libraries(LiveRackCore
@@ -90,7 +91,7 @@ target_sources(LiveRack PRIVATE
     Source/UI/RackView.cpp
     Source/UI/RoutingView.cpp
     Source/UI/PluginBrowser.cpp
-    Source/UI/SettingsView.cpp)
+    Source/UI/SettingsWindow.cpp)
 
 target_link_libraries(LiveRack PRIVATE LiveRackCore)
 

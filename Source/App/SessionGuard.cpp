@@ -67,10 +67,10 @@ void SessionGuard::spawnGuard()
     posix_spawnattr_destroy (&attr);
 }
 
-void SessionGuard::watch (PluginHost& h, AudioEngine& e)
+void SessionGuard::watch (PluginHost& h, DeviceHub& d)
 {
     host = &h;
-    engine = &e;
+    hub = &d;
 
     watchedShow.removeListener (this);
     watchedShow = host->getShow();
@@ -123,12 +123,17 @@ void SessionGuard::timerCallback()
 
 void SessionGuard::checkForStall()
 {
-    if (engine == nullptr || host == nullptr)
+    if (hub == nullptr || host == nullptr)
         return;
 
-    const auto beat = engine->heartbeat.load();
-    const bool stuck = engine->inCallback.load() && beat == lastHeartbeat;
-    lastHeartbeat = beat;
+    // Stuck = some interface's callback is still inside the same block.
+    bool stuck = false;
+    for (auto& o : hub->getOpen())
+    {
+        const auto beat = o->engine->heartbeat.load();
+        stuck |= o->engine->inCallback.load() && beat == lastHeartbeat[o->name];
+        lastHeartbeat[o->name] = beat;
+    }
 
     stalledTicks = stuck ? stalledTicks + 1 : 0;
     if (stalledTicks < stallTicks)

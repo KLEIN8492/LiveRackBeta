@@ -31,7 +31,7 @@ public:
     InflightLog& getInflightLog()          { return inflight; }
 
     // Starts autosave and the stall detector for this host/engine.
-    void watch (PluginHost&, AudioEngine&);
+    void watch (PluginHost&, DeviceHub&);
     void saveNow();
 
     // Call from a clean shutdown, after the final save.
@@ -56,12 +56,12 @@ private:
     std::vector<juce::String> suspects;
 
     PluginHost* host = nullptr;
-    AudioEngine* engine = nullptr;
+    DeviceHub* hub = nullptr;
     juce::ValueTree watchedShow;
 
     bool dirty = false;
     juce::uint32 lastChange = 0, lastFullSave = 0;
-    uint64_t lastHeartbeat = 0;
+    std::map<juce::String, uint64_t> lastHeartbeat;
     int stalledTicks = 0;
 };
 
