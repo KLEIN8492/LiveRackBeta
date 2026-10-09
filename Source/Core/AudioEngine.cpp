@@ -70,7 +70,6 @@ AudioEngine::AudioEngine()
 AudioEngine::~AudioEngine()
 {
     pool.stop();
-    boost.stop();
 }
 
 // ---------------------------------------------------------------------------
@@ -142,11 +141,8 @@ void AudioEngine::audioDeviceAboutToStart (juce::AudioIODevice* device)
         for (auto& job : plan->jobs)
             for (auto& sj : job.slots)
                 sj.slot->plugin->audioWorkgroupContextChanged (workgroup);
-    const bool useBoost = boostEnabled.load() && blockSize <= boostMaxBlock;
-    if (useBoost) boost.start(); else boost.stop();
-
-    // One performance core runs the audio thread, one the boost (if on).
-    const int workers = performanceCoreCount() - 1 - (useBoost ? 1 : 0);
+    // The host divides the performance cores between open interfaces.
+    const int workers = juce::jmin (maxWorkers.load(), performanceCoreCount() - 1);
     startWorkers (juce::jmax (0, workers), device->getWorkgroup(), blockSize, sampleRate);
     running.store (true);
 }
@@ -156,7 +152,6 @@ void AudioEngine::audioDeviceStopped()
     lastCallbackStart = 0;
     running.store (false);
     pool.stop();
-    boost.stop();
 }
 
 void AudioEngine::audioDeviceIOCallbackWithContext (const float* const* inputs, int numInputs,
@@ -192,7 +187,8 @@ void AudioEngine::audioDeviceIOCallbackWithContext (const float* const* inputs, 
         if (outputs[ch] != nullptr)
             juce::FloatVectorOperations::clear (outputs[ch], numSamples);
 
-    if (plan->maxBlockSize > 0 && ! plan->jobs.empty())
+    const bool hasWork = ! plan->jobs.empty() || ! plan->imports.empty() || ! plan->inputExports.empty();
+    if (plan->maxBlockSize > 0 && hasWork)
     {
         for (int offset = 0; offset < numSamples; offset += plan->maxBlockSize)
         {
@@ -207,6 +203,24 @@ void AudioEngine::audioDeviceIOCallbackWithContext (const float* const* inputs, 
 
 void AudioEngine::renderChunk (RenderPlan& plan, const Io& io, float* const* outputs, int numOutputs)
 {
+    const int n = io.numSamples;
+
+    // 1. Send this interface's inputs that racks elsewhere need.
+    for (auto& ex : plan.inputExports)
+    {
+        for (size_t k = 0; k < ex.deviceChannels.size(); ++k)
+        {
+            const int ch = ex.deviceChannels[k];
+            ex.ptrs[k] = ch < io.numInputs && io.inputs[ch] != nullptr ? io.inputs[ch] + io.offset : nullptr;
+        }
+        ex.bridge->write (ex.ptrs.data(), n);
+    }
+
+    // 2. Receive everything arriving from other interfaces.
+    for (auto& im : plan.imports)
+        im.bridge->read (im.buffer.getArrayOfWritePointers(), n);
+
+    // 3. Racks, level by level, in parallel within a level.
     for (auto& level : plan.levels)
     {
         pool.parallelFor ((int) level.size(), [&] (int i)
@@ -215,20 +229,28 @@ void AudioEngine::renderChunk (RenderPlan& plan, const Io& io, float* const* out
         });
     }
 
-    for (auto& job : plan.jobs)
+    // 4. Outputs: local racks, then racks homed on other interfaces.
+    auto addTo = [&] (int o, const float* src)
     {
-        const int rackChannels = job.spec.numChannels;
-        const auto& outs = job.spec.outputs;
+        if (o < numOutputs && outputs[o] != nullptr)
+            juce::FloatVectorOperations::add (outputs[o] + io.offset, src, n);
+    };
 
-        for (size_t k = 0; k < outs.size(); ++k)
-        {
-            const int o = outs[k];
-            if (o >= numOutputs || outputs[o] == nullptr)
-                continue;
+    for (auto& job : plan.jobs)
+        for (auto [o, rch] : job.localOutputs)
+            addTo (o, job.buffer.getReadPointer (rch));
 
-            const int src = rackChannels == 1 ? 0 : (int) (k % (size_t) rackChannels);
-            juce::FloatVectorOperations::add (outputs[o] + io.offset, job.buffer.getReadPointer (src), io.numSamples);
-        }
+    for (auto& im : plan.imports)
+        for (auto [o, bch] : im.toOutputs)
+            addTo (o, im.buffer.getReadPointer (bch));
+
+    // 5. Send rack outputs that other interfaces need.
+    for (auto& ex : plan.rackExports)
+    {
+        const auto& job = plan.jobs[(size_t) ex.job];
+        for (size_t c = 0; c < ex.ptrs.size(); ++c)
+            ex.ptrs[c] = job.buffer.getReadPointer ((int) c);
+        ex.bridge->write (ex.ptrs.data(), n);
     }
 }
 
@@ -241,34 +263,34 @@ void AudioEngine::gatherInput (RenderPlan& plan, RackJob& job, const Io& io)
     for (int c = 0; c < buffer.getNumChannels(); ++c)
         buffer.clear (c, 0, n);
 
-    if (job.sourceJobs.empty())
+    for (auto& tap : job.taps)
     {
-        const auto& ins = job.spec.inputs;
+        const float* src = nullptr;
+        if (tap.fromImport)
+            src = plan.imports[(size_t) tap.import].buffer.getReadPointer (tap.channel);
+        else if (tap.channel < io.numInputs && io.inputs[tap.channel] != nullptr)
+            src = io.inputs[tap.channel] + io.offset;
 
-        for (size_t k = 0; k < ins.size(); ++k)
-        {
-            const int i = ins[k];
-            if (i >= io.numInputs || io.inputs[i] == nullptr)
-                continue;
+        if (src == nullptr)
+            continue;
 
-            if (ins.size() == 1)
-            {
-                for (int c = 0; c < rc; ++c)
-                    juce::FloatVectorOperations::add (buffer.getWritePointer (c), io.inputs[i] + io.offset, n);
-            }
-            else
-            {
-                juce::FloatVectorOperations::add (buffer.getWritePointer ((int) (k % (size_t) rc)), io.inputs[i] + io.offset, n);
-            }
-        }
+        if (tap.rackChannel < 0)
+            for (int c = 0; c < rc; ++c)
+                juce::FloatVectorOperations::add (buffer.getWritePointer (c), src, n);
+        else
+            juce::FloatVectorOperations::add (buffer.getWritePointer (tap.rackChannel), src, n);
     }
-    else
+
+    for (int s : job.sourceJobs)
     {
-        for (int s : job.sourceJobs)
-        {
-            const auto& src = plan.jobs[(size_t) s];
-            mixInto (buffer, rc, src.buffer, src.spec.numChannels, n);
-        }
+        const auto& src = plan.jobs[(size_t) s];
+        mixInto (buffer, rc, src.buffer, src.spec.numChannels, n);
+    }
+
+    for (int im : job.sourceImports)
+    {
+        const auto& src = plan.imports[(size_t) im].buffer;
+        mixInto (buffer, rc, src, src.getNumChannels(), n);
     }
 }
 

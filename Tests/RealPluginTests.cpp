@@ -5,6 +5,7 @@
 
 #include "Core/AudioEngine.h"
 #include "Core/PlanBuilder.h"
+#include "TestHelpers.h"
 #include "Core/PluginLayout.h"
 #include "Core/CpuBoost.h"
 #include "Core/MacActivity.h"
@@ -115,21 +116,17 @@ private:
         RackSpec rack;
         rack.id = "vox";
         rack.critical = true;
-        rack.inputs = { 0 };
+        rack.inputs = test::ports ({ 0 });
         rack.numChannels = channels;
-        rack.outputs = { 0, 1 };
+        rack.outputs = test::ports ({ 0, 1 });
         rack.runtime = std::make_shared<RackRuntime> ("vox");
         rack.slots = { slot };
 
-        PlanSpec spec;
-        spec.racks = { rack };
-        spec.numDeviceInputs = 2;
-        spec.numDeviceOutputs = 2;
-        spec.maxBlockSize = block;
-        spec.sampleRate = sr;
+        auto spec = test::singleDevice ({ rack }, 2, 2, block, sr);
 
         AudioEngine engine;
-        engine.setPlan (buildPlan (spec).plan);
+        auto built = buildPlan (spec);
+        engine.setPlan (test::takePlan (built));
 
         std::vector<float> in ((size_t) block), out0 ((size_t) block), out1 ((size_t) block), silence ((size_t) block, 0.0f);
         const float* ins[] = { in.data(), silence.data() };

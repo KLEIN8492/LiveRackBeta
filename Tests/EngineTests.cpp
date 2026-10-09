@@ -1,5 +1,6 @@
 #include "Core/AudioEngine.h"
 #include "Core/PlanBuilder.h"
+#include "TestHelpers.h"
 #include <limits>
 
 using namespace lr;
@@ -61,8 +62,8 @@ RackSpec rack (juce::String id, std::vector<int> ins, std::vector<int> outs, std
 {
     RackSpec r;
     r.id = id;
-    r.inputs = std::move (ins);
-    r.outputs = std::move (outs);
+    for (int c : ins)  r.inputs.push_back ({ "dev", c });
+    for (int c : outs) r.outputs.push_back ({ "dev", c });
     r.sources = std::move (sources);
     r.runtime = std::make_shared<RackRuntime> (id);
     return r;
@@ -97,12 +98,8 @@ struct Harness
 
 std::unique_ptr<RenderPlan> build (std::vector<RackSpec> racks)
 {
-    PlanSpec s;
-    s.racks = std::move (racks);
-    s.numDeviceInputs = Harness::numChannels;
-    s.numDeviceOutputs = Harness::numChannels;
-    s.maxBlockSize = Harness::block;
-    return buildPlan (s).plan;
+    auto r = buildPlan (test::singleDevice (std::move (racks), Harness::numChannels, Harness::numChannels, Harness::block));
+    return test::takePlan (r);
 }
 } // namespace
 
@@ -252,6 +249,42 @@ public:
                 h.run (engine);
             expect (mute->silentOutput.load());
             expect (mute->fault.load() == FaultReason::none);
+        }
+
+        beginTest ("two interfaces: a rack crossing from A's input to B's output");
+        {
+            RackSpec x;
+            x.id = "x";
+            x.inputs = { { "A", 1 } };
+            x.outputs = { { "B", 0 } };
+            x.runtime = std::make_shared<RackRuntime> ("x");
+            x.slots = { slotWith (1, gain (2.0f)) };
+
+            RackSpec local;
+            local.id = "local";
+            local.inputs = { { "A", 0 } };
+            local.outputs = { { "A", 3 } };
+            local.runtime = std::make_shared<RackRuntime> ("local");
+
+            PlanSpec s;
+            s.racks = { x, local };
+            s.devices = { DeviceSpec { "A", 4, 4, Harness::block }, DeviceSpec { "B", 4, 4, Harness::block } };
+            auto r = buildPlan (s);
+
+            AudioEngine a, b;
+            a.setPlan (test::takePlan (r, "A"));
+            b.setPlan (test::takePlan (r, "B"));
+            Harness ha, hb;
+
+            for (int i = 0; i < 200; ++i) // interleave like two devices
+            {
+                ha.run (a);
+                hb.run (b);
+            }
+
+            expectWithinAbsoluteError (hb.outAt (0), 0.2f * 2.0f, 1e-4f);  // A in 2 (0.2) x2 on B out 1
+            expectWithinAbsoluteError (ha.outAt (3), 0.1f, 1e-6f);         // local rack: no bridge
+            expectWithinAbsoluteError (ha.outAt (0), 0.0f, 1e-6f);
         }
 
         beginTest ("old plans are freed once the audio thread has moved on");

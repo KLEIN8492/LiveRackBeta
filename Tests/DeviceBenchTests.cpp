@@ -5,6 +5,7 @@
 
 #include "Core/AudioEngine.h"
 #include "Core/PlanBuilder.h"
+#include "TestHelpers.h"
 #include "Core/PluginLayout.h"
 #include <juce_audio_processors/juce_audio_processors.h>
 
@@ -113,20 +114,16 @@ private:
         RackSpec rack;
         rack.id = "vox";
         rack.numChannels = channels;
-        rack.inputs = { 0 };
-        rack.outputs = { 0, 1 };
+        rack.inputs = test::ports ({ 0 });
+        rack.outputs = test::ports ({ 0, 1 });
         rack.runtime = std::make_shared<RackRuntime> ("vox");
         rack.slots = { slot };
 
-        PlanSpec spec;
-        spec.racks = { rack };
-        spec.numDeviceInputs = 2;
-        spec.numDeviceOutputs = 2;
-        spec.maxBlockSize = bs;
-        spec.sampleRate = sr;
+        auto spec = test::singleDevice ({ rack }, 2, 2, bs, sr);
 
         AudioEngine engine;
-        engine.setPlan (buildPlan (spec).plan);
+        auto built = buildPlan (spec);
+        engine.setPlan (test::takePlan (built));
         SyntheticInput input (engine);
 
         dm.addAudioCallback (&input);
