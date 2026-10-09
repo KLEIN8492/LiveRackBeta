@@ -12,7 +12,8 @@ namespace lr
 // channels active at the shared sample rate and buffer size, and runs its own
 // AudioEngine in its own callback thread. Interfaces are opened when wanted
 // (referenced by a rack) and reopened when they come back after unplugging.
-class DeviceHub final : private juce::AudioIODeviceType::Listener
+class DeviceHub final : private juce::AudioIODeviceType::Listener,
+                        private juce::Timer
 {
 public:
     DeviceHub();
@@ -48,6 +49,7 @@ public:
     AudioEngine* engineFor (const juce::String& name) const;
     juce::AudioIODevice* deviceFor (const juce::String& name) const;
     juce::String getError (const juce::String& name) const; // why a wanted interface isn't open
+    int getRestarts (const juce::String& name) const;       // watchdog reopenings this session
 
     // ---- engine-wide controls ---------------------------------------------------
     void setInflightLog (InflightLog* log);
@@ -63,6 +65,7 @@ public:
 
 private:
     void audioDeviceListChanged() override;
+    void timerCallback() override;   // watchdog
     void rescan();
     bool openOne (const juce::String& name);
     void closeOne (const juce::String& name);
@@ -76,6 +79,10 @@ private:
     std::vector<std::unique_ptr<Open>> open;
     std::set<juce::String> wanted;
     std::map<juce::String, juce::String> errors;
+    std::map<juce::String, int> restarts;
+    struct Watch { uint64_t beat = 0; int stalledMs = 0; };
+    std::map<juce::String, Watch> watch;
+    juce::uint32 lastRetry = 0;
 
     double sampleRate = 48000.0;
     int blockSize = 64;

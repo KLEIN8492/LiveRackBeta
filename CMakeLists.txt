@@ -35,6 +35,7 @@ add_library(LiveRackCore STATIC
     Source/Core/ClockBridge.cpp
     Source/Core/DeviceHub.cpp
     Source/Core/DelayLine.cpp
+    Source/Core/PlanDeploy.cpp
 )
 
 target_link_libraries(LiveRackCore
@@ -124,6 +125,7 @@ target_sources(LiveRackTests PRIVATE
     Tests/ShowModelTests.cpp
     Tests/PortRefTests.cpp
     Tests/ClockBridgeTests.cpp
+    Tests/StressTests.cpp
     Tests/RealPluginTests.cpp
     Tests/DeviceBenchTests.cpp)
 target_link_libraries(LiveRackTests PRIVATE LiveRackCore)

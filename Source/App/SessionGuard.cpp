@@ -106,7 +106,16 @@ void SessionGuard::saveNow()
     }
 
     host->captureStates();
-    show::saveToFile (host->getShow(), getAutosaveFile());
+
+    // Keep a known-good copy at most 5 minutes old, in case the autosave is
+    // ever damaged (the write itself is atomic: temp file + rename).
+    const auto autosave = getAutosaveFile(), backup = getBackupFile();
+    if (autosave.existsAsFile()
+        && (! backup.existsAsFile() || backup.getLastModificationTime() < juce::Time::getCurrentTime() - juce::RelativeTime::minutes (5))
+        && show::loadFromFile (autosave).isValid())
+        autosave.copyFileTo (backup);
+
+    show::saveToFile (host->getShow(), autosave);
     dirty = false;
     lastFullSave = juce::Time::getMillisecondCounter();
 }

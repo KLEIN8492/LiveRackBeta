@@ -69,6 +69,12 @@ public:
         host->getKnownPlugins().addChangeListener (this);
 
         auto show = show::loadFromFile (session.getAutosaveFile());
+        bool fromBackup = false;
+        if (! show.isValid() && session.getAutosaveFile().existsAsFile())
+        {
+            show = show::loadFromFile (session.getBackupFile());
+            fromBackup = show.isValid();
+        }
         if (! show.isValid())
             show = show::createEmpty();
         migrate (show);
@@ -107,7 +113,11 @@ public:
         mainComponent = content;
         window = std::make_unique<MainWindow> ("LiveRack", content);
 
-        if (session.previousRunCrashed())
+        if (fromBackup)
+        {
+            content->showBanner ("The autosaved show was unreadable. Restored the backup (up to 5 minutes older).", theme::warn);
+        }
+        else if (session.previousRunCrashed())
         {
             content->showBanner (suspectNames.isEmpty()
                                      ? juce::String ("Recovered after an unexpected exit. Your show was restored.")

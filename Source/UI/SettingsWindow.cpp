@@ -105,6 +105,8 @@ public:
                 g.setColour (dev->getXRunCount() > 0 ? theme::warn : theme::text);
                 g.drawText (juce::String (juce::jmax (0, dev->getXRunCount())), c[6], juce::Justification::centredLeft);
                 detail = "in use";
+                if (const int n = ctx.devices.getRestarts (info.name); n > 0)
+                    detail << "   (reopened by watchdog x" << n << ")";
                 if (dev->getCurrentBufferSizeSamples() != ctx.devices.getBlockSize())
                     detail = "runs at " + juce::String (dev->getCurrentBufferSizeSamples()) + " (its nearest supported size)";
             }
@@ -236,14 +238,14 @@ public:
         g.drawFittedText ("Keeps one CPU core busy whenever an interface runs at 128 samples or less, so the Mac never "
                           "slows the processor down between tiny audio blocks. Without it, 32-64 sample buffers click. "
                           "Uses more power: best on mains.",
-                          r.withTrimmedTop (30).removeFromTop (48), juce::Justification::topLeft, 3);
+                          r.withTrimmedTop (30).removeFromTop (48), juce::Justification::topLeft, 3, 1.0f);
 
         g.setColour (theme::dim);
         g.setFont (theme::font (11.5f));
         g.drawFittedText ("Delays every rack to the latency of the slowest one, so inserts summed on the console "
                           "(drum mics, stereo pairs, parallel buses) stay in phase. Off: each rack only has its own plugins' latency. "
                           "Either way a rack's latency never changes when plugins are bypassed or fault.",
-                          r.withTrimmedTop (114).removeFromTop (48), juce::Justification::topLeft, 3);
+                          r.withTrimmedTop (114).removeFromTop (48), juce::Justification::topLeft, 3, 1.0f);
 
         theme::caption (g, "Diagnostics", r.withTrimmedTop (184).removeFromTop (14));
         g.setColour (theme::text);

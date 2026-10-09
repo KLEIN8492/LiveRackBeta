@@ -1,6 +1,7 @@
 #include "PluginHost.h"
 #include "PluginWindow.h"
 #include "Core/PlanBuilder.h"
+#include "Core/PlanDeploy.h"
 #include "Core/PluginLayout.h"
 
 namespace lr
@@ -344,19 +345,17 @@ void PluginHost::rebuildPlan()
         spec.racks.push_back (std::move (rs));
     }
 
-    auto result = buildPlan (spec);
+    std::map<juce::String, AudioEngine*> engines;
+    for (auto& o : devices.getOpen())
+        engines[o->name] = o->engine.get();
+
+    auto result = deployPlans (spec, homes, engines);
     routingError = result.error;
 
-    if (result.error.isEmpty())
+    if (! result.homes.empty() || result.error.isEmpty())
     {
-        homes = result.homes;
         latencies = result.latencies;
         alignedLatency = result.alignedLatency;
-        for (auto& o : devices.getOpen())
-        {
-            auto it = result.plans.find (o->name);
-            o->engine->setPlan (it != result.plans.end() ? std::move (it->second) : nullptr);
-        }
 
         // Forget bridges no plan uses any more (running plans keep their own refs).
         for (auto it = bridges.begin(); it != bridges.end();)

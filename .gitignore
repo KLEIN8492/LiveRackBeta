@@ -3,3 +3,4 @@ External/JUCE/
 .DS_Store
 build-tests/
 build/
+build-tsan/

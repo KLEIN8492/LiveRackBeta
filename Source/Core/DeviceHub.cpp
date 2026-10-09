@@ -19,10 +19,69 @@ DeviceHub::DeviceHub()
     : type (juce::AudioIODeviceType::createAudioIODeviceType_CoreAudio())
 {
     type->addListener (this);
+    startTimer (250);
+}
+
+int DeviceHub::getRestarts (const juce::String& name) const
+{
+    auto it = restarts.find (name);
+    return it != restarts.end() ? it->second : 0;
+}
+
+// Watchdog. An interface whose callbacks stop for 1.5 s while not inside a
+// block (driver restarted, clock lost, rate changed elsewhere) is reopened.
+// A hang *inside* a block is a plugin, handled by the session's stall
+// detector. Interfaces that failed to open are retried every 3 s.
+void DeviceHub::timerCallback()
+{
+    constexpr int tickMs = 250, deadMs = 1500, retryMs = 3000;
+    bool changed = false;
+
+    std::vector<juce::String> dead;
+    for (auto& o : open)
+    {
+        auto& w = watch[o->name];
+        const auto beat = o->engine->heartbeat.load();
+        const bool idle = beat == w.beat && ! o->engine->inCallback.load();
+        w.beat = beat;
+        w.stalledMs = idle ? w.stalledMs + tickMs : 0;
+
+        if (w.stalledMs >= deadMs || ! o->device->isPlaying())
+            dead.push_back (o->name);
+    }
+
+    for (auto& name : dead)
+    {
+        closeOne (name);
+        watch.erase (name);
+        ++restarts[name];
+        if (openOne (name))
+            errors.erase (name);
+        else
+            errors[name] = "Stopped delivering audio; reopening failed: " + getError (name);
+        changed = true;
+    }
+
+    const auto now = juce::Time::getMillisecondCounter();
+    if (openingAllowed && now - lastRetry >= (juce::uint32) retryMs)
+    {
+        lastRetry = now;
+        for (auto& name : wanted)
+            if (deviceFor (name) == nullptr && findAvailable (name) != nullptr && openOne (name))
+                changed = true;
+    }
+
+    if (changed)
+    {
+        updateBoost();
+        if (onChanged)
+            onChanged();
+    }
 }
 
 DeviceHub::~DeviceHub()
 {
+    stopTimer();
     type->removeListener (this);
     while (! open.empty())
         closeOne (open.back()->name);

@@ -39,6 +39,10 @@ public:
     // public so tests can drive the engine without a device.
     void startWorkers (int numWorkers, const juce::AudioWorkgroup&, int blockSize, double sampleRate);
 
+    // For tests/benchmarks that call the callback from their own thread with no
+    // device: marks the engine running, so retired plans wait for that thread.
+    void beginStandalone() noexcept                   { running.store (true); }
+
     double getCpuLoad() const                         { return loadMeasurer.getLoadAsProportion(); }
     bool isRunning() const noexcept                   { return running.load(); }
 

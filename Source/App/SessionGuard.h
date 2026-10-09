@@ -20,6 +20,7 @@ public:
 
     static juce::File getSupportDirectory();
     juce::File getAutosaveFile() const     { return dir.getChildFile ("autosave.liverack"); }
+    juce::File getBackupFile() const       { return dir.getChildFile ("autosave-backup.liverack"); }
     juce::File getDeviceFile() const       { return dir.getChildFile ("device.xml"); }
     juce::File getPluginListFile() const   { return dir.getChildFile ("plugins.xml"); }
     juce::File getScanPedalFile() const    { return dir.getChildFile ("scan-in-progress.txt"); }
