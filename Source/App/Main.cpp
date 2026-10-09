@@ -6,6 +6,7 @@
 #include "Host/OutOfProcessScanner.h"
 #include "UI/MainComponent.h"
 #include "UI/SettingsWindow.h"
+#include "UI/PluginBrowser.h"
 
 namespace lr
 {
@@ -36,16 +37,25 @@ class LiveRackApplication final : public juce::JUCEApplication,
 public:
     const juce::String getApplicationName() override    { return "LiveRack"; }
     const juce::String getApplicationVersion() override { return JUCE_APPLICATION_VERSION_STRING; }
-    bool moreThanOneInstanceAllowed() override          { return false; }
+    // A --snapshot copy is read-only, so it may run next to a live session.
+    bool moreThanOneInstanceAllowed() override
+    {
+        return juce::JUCEApplicationBase::getCommandLineParameters().contains ("--snapshot");
+    }
 
     void initialise (const juce::String& commandLine) override
     {
         // --snapshot <dir>: render each view to PNG without opening audio, then quit.
         snapshotDir = commandLine.fromFirstOccurrenceOf ("--snapshot", false, false).trim().unquoted();
-        const bool snapshotMode = commandLine.contains ("--snapshot");
+        snapshotMode = commandLine.contains ("--snapshot");
 
-        session.begin();
-        latencyCritical = std::make_unique<LatencyCriticalActivity> ("LiveRack is processing live audio");
+        // Snapshot mode must not touch the live session's files (running
+        // marker, crash log, autosave) or start a guard.
+        if (! snapshotMode)
+        {
+            session.begin();
+            latencyCritical = std::make_unique<LatencyCriticalActivity> ("LiveRack is processing live audio");
+        }
 
         juce::PropertiesFile::Options options;
         options.applicationName = "LiveRack";
@@ -105,8 +115,10 @@ public:
         }
 
         host->setShow (show);
-        session.watch (*host, hub);
-        diagnostics = std::make_unique<DiagnosticsLog> (hub, SessionGuard::getSupportDirectory().getChildFile ("diagnostics.log"));
+        if (! snapshotMode)
+            session.watch (*host, hub);
+        if (! snapshotMode)
+            diagnostics = std::make_unique<DiagnosticsLog> (hub, SessionGuard::getSupportDirectory().getChildFile ("diagnostics.log"));
 
         ctx = std::make_unique<AppContext> (AppContext { *host, hub, session, settings, [this] { showSettings(); } });
         auto* content = new MainComponent (*ctx);
@@ -141,16 +153,43 @@ public:
                 mainComponent->saveSnapshot (dir.getChildFile ("main.png"));
                 showSettings();
                 settingsWindow->getContent().saveSnapshots (dir);
+
+                // Plugin browser: all, then one category (scratch settings file).
+                for (int category : { -1, (int) PluginCategory::reverb })
+                {
+                    juce::TemporaryFile scratch;
+                    juce::PropertiesFile props (scratch.getFile(), {});
+                    props.setValue ("browserCategory", category);
+                    theme::LookAndFeel lf;
+                    PluginBrowser browser (host->getKnownPlugins(), props, {});
+                    browser.setLookAndFeel (&lf);
+                    auto image = browser.createComponentSnapshot (browser.getLocalBounds(), true, 2.0f);
+                    browser.setLookAndFeel (nullptr);
+                    auto file = dir.getChildFile (category < 0 ? "browser-all.png" : "browser-reverb.png");
+                    file.deleteFile();
+                    juce::FileOutputStream out (file);
+                    if (out.openedOk())
+                        juce::PNGImageFormat().writeImageToStream (image, out);
+                }
+
                 juce::JUCEApplication::quit();
             });
     }
 
     void shutdown() override
     {
+        // A second launch is handed to the running copy and shuts down without
+        // ever initialising: it must not touch the live session's files.
+        if (host == nullptr)
+            return;
+
         juce::MenuBarModel::setMacMainMenu (nullptr);
 
-        session.saveNow();
-        host->saveKnownPlugins (session.getPluginListFile());
+        if (! snapshotMode)
+        {
+            session.saveNow (true); // audio is about to stop: safe to ask every plugin
+            host->saveKnownPlugins (session.getPluginListFile());
+        }
         host->getKnownPlugins().removeChangeListener (this);
 
         diagnostics.reset();
@@ -160,7 +199,8 @@ public:
         hub.setWanted ({});   // stop every interface before the plugins go
         host.reset();
 
-        session.endCleanly();
+        if (! snapshotMode)
+            session.endCleanly();
         latencyCritical.reset();
     }
 
@@ -360,6 +400,7 @@ private:
     std::unique_ptr<LatencyCriticalActivity> latencyCritical;
     juce::File currentFile;
     juce::String snapshotDir;
+    bool snapshotMode = false;
 };
 } // namespace lr
 

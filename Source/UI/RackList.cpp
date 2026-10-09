@@ -61,7 +61,14 @@ void RackList::refresh()
 {
     list.updateContent();
 
-    auto racks = show::getRacks (ctx.host.getShow());
+    auto show = ctx.host.getShow();
+    auto racks = show::getRacks (show);
+
+    routingText.clear();
+    for (auto rack : racks)
+        routingText[rack[ids::id].toString()] = juce::String ((int) rack[ids::channels] == 2 ? "ST " : "MO ")
+                                              + show::describeRouting (rack, show);
+
     if (! racks.getChildWithProperty (ids::id, selectedId).isValid())
         selectRack (racks.getNumChildren() > 0 ? racks.getChild (0)[ids::id].toString() : juce::String());
 
@@ -84,9 +91,63 @@ void RackList::selectRack (const juce::String& rackId)
     }
 }
 
+// 30 Hz. Meters decay here (not in paint), so a row is only redrawn when a
+// lit segment or its status light actually changes: an idle show costs
+// almost nothing, and a busy one repaints meter strips, not whole rows.
 void RackList::tick()
 {
-    list.repaint();
+    auto racks = show::getRacks (ctx.host.getShow());
+    const int meterWidth = meterArea (list.getVisibleRowWidth(), list.getRowHeight()).getWidth();
+
+    for (int row = 0; row < racks.getNumChildren(); ++row)
+    {
+        auto rack = racks.getChild (row);
+        const auto id = rack[ids::id].toString();
+        auto& m = meters[id];
+
+        if (auto rt = ctx.host.getRack (id))
+        {
+            m.in.update (rt->inPeak);
+            m.out.update (rt->outPeak);
+        }
+
+        const int inLit = theme::meterSegmentsLit (m.in.shown, meterWidth);
+        const int outLit = theme::meterSegmentsLit (m.out.shown, meterWidth);
+        const auto status = statusColour (rack);
+
+        if (status != m.status)
+        {
+            list.repaintRow (row);
+        }
+        else if (inLit != m.inLit || outLit != m.outLit)
+        {
+            const auto bounds = list.getRowPosition (row, true);
+            if (! bounds.isEmpty())
+                list.repaint (meterArea (bounds.getWidth(), bounds.getHeight()) + bounds.getPosition());
+        }
+
+        m.status = status;
+        m.inLit = inLit;
+        m.outLit = outLit;
+    }
+}
+
+// Red = dry fallback, amber = a plugin faulted, green = fine, grey = bypassed.
+juce::Colour RackList::statusColour (const juce::ValueTree& rack) const
+{
+    if (auto rt = ctx.host.getRack (rack[ids::id].toString()); rt != nullptr && rt->dryFallback.load())
+        return theme::fault;
+
+    for (auto slot : rack)
+        if (auto s = ctx.host.getSlot (slot[ids::id].toString()); s != nullptr && s->fault.load() != FaultReason::none)
+            return theme::warn;
+
+    return (bool) rack[ids::bypassed] ? theme::dim : theme::accent;
+}
+
+juce::Rectangle<int> RackList::meterArea (int rowWidth, int rowHeight)
+{
+    return juce::Rectangle<int> (0, 0, rowWidth, rowHeight).reduced (10, 5).removeFromBottom (14).removeFromRight (96);
 }
 
 int RackList::getNumRows()
@@ -127,16 +188,7 @@ void RackList::paintListBoxItem (int row, juce::Graphics& g, int width, int heig
         g.fillRect (0, 0, 3, height);
     }
 
-    // Status: red = dry fallback, amber = a plugin faulted, green = fine, grey = bypassed.
-    bool slotFault = false;
-    for (auto slot : rack)
-        if (auto s = ctx.host.getSlot (slot[ids::id].toString()))
-            slotFault |= s->fault.load() != FaultReason::none;
-
-    juce::Colour status = theme::accent;
-    if ((bool) rack[ids::bypassed])                    status = theme::dim;
-    if (slotFault)                                     status = theme::warn;
-    if (rt != nullptr && rt->dryFallback.load())       status = theme::fault;
+    const auto status = statusColour (rack);
 
     auto r = juce::Rectangle<int> (0, 0, width, height).reduced (10, 5);
     auto top = r.removeFromTop (18);
@@ -163,19 +215,20 @@ void RackList::paintListBoxItem (int row, juce::Graphics& g, int width, int heig
     g.drawText (rack[ids::name].toString(), top, juce::Justification::centredLeft, true);
 
     auto bottom = r.removeFromBottom (14);
-    auto meterArea = bottom.removeFromRight (96);
+    const auto meterRect = meterArea (width, height);
+    bottom.removeFromRight (meterRect.getWidth());
     g.setColour (theme::dim);
     g.setFont (theme::mono (10.5f));
-    g.drawText (juce::String ((int) rack[ids::channels] == 2 ? "ST " : "MO ") + show::describeRouting (rack, show),
-                bottom.withTrimmedLeft (36), juce::Justification::centredLeft, true);
+    if (auto it = routingText.find (id); it != routingText.end())
+        g.drawText (it->second, bottom.withTrimmedLeft (36), juce::Justification::centredLeft, true);
 
     if (rt != nullptr)
     {
         auto& m = meters[id];
-        auto bars = meterArea.withSizeKeepingCentre (meterArea.getWidth(), 10);
-        theme::drawMeter (g, bars.removeFromTop (4), m.in.update (rt->inPeak));
+        auto bars = meterRect.withSizeKeepingCentre (meterRect.getWidth(), 10);
+        theme::drawMeter (g, bars.removeFromTop (4), m.in.shown);
         bars.removeFromTop (2);
-        theme::drawMeter (g, bars.removeFromTop (4), m.out.update (rt->outPeak));
+        theme::drawMeter (g, bars.removeFromTop (4), m.out.shown);
     }
 }
 

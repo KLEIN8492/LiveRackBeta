@@ -26,6 +26,11 @@ public:
 
     int getNumWorkers() const noexcept { return (int) workers.size(); }
 
+    // Any thread. At most this many workers are woken per batch, so interfaces
+    // opened later can share the cores without restarting anyone's audio.
+    void setActiveWorkers (int n) noexcept { activeLimit.store (juce::jmax (0, n), std::memory_order_relaxed); }
+    int getActiveWorkers() const noexcept  { return juce::jmin (activeLimit.load (std::memory_order_relaxed), getNumWorkers()); }
+
     // Audio thread. Calls fn(i) for i in [0, n) using the workers + caller.
     template <typename Fn>
     void parallelFor (int n, Fn&& fn)
@@ -54,6 +59,7 @@ private:
     std::atomic<uint64_t> dispatch { 0 };
     std::atomic<int> remaining { 0 };
     std::atomic<bool> exiting { false };
+    std::atomic<int> activeLimit { 1 << 20 };
     TaskFn taskFn = nullptr;
     void* taskCtx = nullptr;
     uint32_t epoch = 0;

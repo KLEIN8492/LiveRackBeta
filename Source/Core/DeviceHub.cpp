@@ -28,13 +28,36 @@ int DeviceHub::getRestarts (const juce::String& name) const
     return it != restarts.end() ? it->second : 0;
 }
 
+namespace
+{
+constexpr int retryCapMs = 8000;
+
+// Reopen back-off: the first failure retries at once (driver hiccup), then
+// 1, 2, 4, 8 s. Capped low: when a lost clock comes back, audio should too.
+int retryDelayMs (int failures)
+{
+    return failures <= 1 ? 0 : juce::jmin (retryCapMs, 1000 << juce::jmin (failures - 2, 3));
+}
+
+bool reached (juce::uint32 now, juce::uint32 due) noexcept { return (juce::int32) (now - due) >= 0; }
+} // namespace
+
+void DeviceHub::scheduleRetry (const juce::String& name, juce::uint32 now)
+{
+    auto& r = retries[name];
+    ++r.failures;
+    r.due = now + (juce::uint32) retryDelayMs (r.failures);
+}
+
 // Watchdog. An interface whose callbacks stop for 1.5 s while not inside a
-// block (driver restarted, clock lost, rate changed elsewhere) is reopened.
-// A hang *inside* a block is a plugin, handled by the session's stall
-// detector. Interfaces that failed to open are retried every 3 s.
+// block (driver restarted, clock lost, rate changed elsewhere) is reopened,
+// with back-off so a dead clock doesn't hammer Core Audio and rebuild every
+// plan forever. A hang *inside* a block is a plugin, handled by the
+// session's stall detector. 10 s of healthy audio resets the back-off.
 void DeviceHub::timerCallback()
 {
-    constexpr int tickMs = 250, deadMs = 1500, retryMs = 3000;
+    constexpr int tickMs = 250, deadMs = 1500, healthyMs = 10000;
+    const auto now = juce::Time::getMillisecondCounter();
     bool changed = false;
 
     std::vector<juce::String> dead;
@@ -42,12 +65,16 @@ void DeviceHub::timerCallback()
     {
         auto& w = watch[o->name];
         const auto beat = o->engine->heartbeat.load();
-        const bool idle = beat == w.beat && ! o->engine->inCallback.load();
+        // Not playing counts as idle rather than dead at once: JUCE may be
+        // restarting the device itself.
+        const bool idle = (beat == w.beat && ! o->engine->inCallback.load()) || ! o->device->isPlaying();
         w.beat = beat;
         w.stalledMs = idle ? w.stalledMs + tickMs : 0;
 
-        if (w.stalledMs >= deadMs || ! o->device->isPlaying())
+        if (w.stalledMs >= deadMs)
             dead.push_back (o->name);
+        else if (! idle && now - o->openedAt > (juce::uint32) healthyMs)
+            retries.erase (o->name);
     }
 
     for (auto& name : dead)
@@ -55,20 +82,31 @@ void DeviceHub::timerCallback()
         closeOne (name);
         watch.erase (name);
         ++restarts[name];
-        if (openOne (name))
-            errors.erase (name);
-        else
-            errors[name] = "Stopped delivering audio; reopening failed: " + getError (name);
+        scheduleRetry (name, now);
+        errors[name] = "Stopped delivering audio";
         changed = true;
     }
 
-    const auto now = juce::Time::getMillisecondCounter();
-    if (openingAllowed && now - lastRetry >= (juce::uint32) retryMs)
+    if (openingAllowed)
     {
-        lastRetry = now;
         for (auto& name : wanted)
-            if (deviceFor (name) == nullptr && findAvailable (name) != nullptr && openOne (name))
+        {
+            if (deviceFor (name) != nullptr || findAvailable (name) == nullptr)
+                continue;
+            if (auto it = retries.find (name); it != retries.end() && ! reached (now, it->second.due))
+                continue;
+
+            if (openOne (name))
+            {
                 changed = true;
+            }
+            else
+            {
+                scheduleRetry (name, now);
+                errors[name] = getError (name) + " (retrying in "
+                             + juce::String (retryDelayMs (retries[name].failures) / 1000) + " s)";
+            }
+        }
     }
 
     if (changed)
@@ -146,6 +184,7 @@ const DeviceHub::Info* DeviceHub::findAvailable (const juce::String& name)
 
 void DeviceHub::audioDeviceListChanged()
 {
+    retries.clear(); // interfaces came or went: try them afresh
     rescan();
     reconcile();
     if (onChanged)
@@ -195,8 +234,8 @@ void DeviceHub::reconcile()
 
     if (openingAllowed)
         for (auto& n : wanted)
-            if (deviceFor (n) == nullptr)
-                openOne (n);
+            if (deviceFor (n) == nullptr && ! openOne (n))
+                scheduleRetry (n, juce::Time::getMillisecondCounter());
 
     updateBoost();
 }
@@ -237,13 +276,13 @@ bool DeviceHub::openOne (const juce::String& name)
     entry->engine->setInflightLog (inflight);
     entry->engine->setGlobalBypass (globalBypass);
 
-    // Share the performance cores: one per audio thread, one for the boost.
-    const int interfaces = (int) open.size() + 1;
-    const bool willBoost = boostEnabled && device->getCurrentBufferSizeSamples() <= boostMaxBlock;
-    const int spare = performanceCores() - interfaces - (willBoost ? 1 : 0);
-    entry->engine->setMaxWorkers (juce::jmax (0, spare / interfaces));
+    // Its share of the cores, counting this one; updateBoost() re-shares
+    // every engine once the open set settles.
+    const bool willBoost = boost.isRunning() || (boostEnabled && device->getCurrentBufferSizeSamples() <= boostMaxBlock);
+    entry->engine->setMaxWorkers (workerShare ((int) open.size() + 1, willBoost));
 
     entry->device = std::move (device);
+    entry->openedAt = juce::Time::getMillisecondCounter();
     entry->device->start (entry->engine.get());
     open.push_back (std::move (entry));
     return true;
@@ -319,6 +358,28 @@ void DeviceHub::updateBoost()
         boost.start();
     else
         boost.stop();
+
+    const int share = workerShare ((int) open.size(), boost.isRunning());
+    for (auto& o : open)
+        o->engine->setMaxWorkers (share);
+}
+
+// Real-time workers per engine so that, summed over every interface, audio
+// threads + workers + boost never exceed the performance cores (the audio
+// thread spin-waits on its workers, so an oversubscribed worker costs
+// deadline). Wanted-but-missing interfaces are counted too, so one coming
+// back finds its share free.
+int DeviceHub::workerShare (int interfaces, bool boosting)
+{
+    int expected = interfaces;
+    int wantedAvailable = 0;
+    for (auto& name : wanted)
+        if (findAvailable (name) != nullptr)
+            ++wantedAvailable;
+    expected = juce::jmax (1, expected, wantedAvailable);
+
+    const int spare = performanceCores() - expected - (boosting ? 1 : 0);
+    return juce::jmax (0, spare / expected);
 }
 
 } // namespace lr

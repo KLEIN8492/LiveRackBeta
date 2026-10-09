@@ -16,7 +16,7 @@ class PluginWindow;
 // the current device and rebuilds/swaps the RenderPlan after every change.
 class PluginHost final : private juce::ValueTree::Listener,
                          private juce::AsyncUpdater,
-                         private juce::AudioProcessorListener,
+                         private juce::ChangeListener,
                          private juce::Timer
 {
 public:
@@ -45,8 +45,11 @@ public:
     int getSlotLatencySamples (const juce::String& slotId) const;
     double getSampleRate() const;
 
-    // Writes every plugin's current state into its SLOT node (message thread).
-    void captureStates();
+    // Writes plugin states into their SLOT nodes (message thread). Saving state
+    // interrupts a plugin (many lock against their own processing), so the
+    // autosave only asks plugins that reported an edit or have an editor open.
+    void captureStates (bool onlyChanged = false);
+    bool hasUncapturedState() const;
 
     void openEditor (const juce::String& slotId);
     void closeEditor (const juce::String& slotId);
@@ -58,15 +61,19 @@ public:
     std::function<void()> onStateChanged;
 
 private:
+    class SlotListener;
+
     void attachSlot (juce::ValueTree slot);
     void detachSlot (const juce::String& slotId);
     void createInstance (juce::ValueTree slot);
+    bool resolveScanned (const juce::PluginDescription& wanted, juce::PluginDescription& out) const;
     void configure (juce::AudioPluginInstance&, int rackChannels);
     void prepare (juce::AudioPluginInstance&);
     void reconfigureSlots (const std::vector<juce::String>& slotIds);
+    void prepareUnprepared();
     void devicesChanged();
     void clearAllPlans();
-    bool waitForEngines();
+    bool waitForEngines (int timeoutMs = 1000);
 
     void rebuildPlan();
     void notify();
@@ -78,8 +85,7 @@ private:
     void valueTreeRedirected (juce::ValueTree&) override;
     void handleAsyncUpdate() override;
     void timerCallback() override;
-    void audioProcessorParameterChanged (juce::AudioProcessor*, int, float) override {}
-    void audioProcessorChanged (juce::AudioProcessor*, const ChangeDetails&) override;
+    void changeListenerCallback (juce::ChangeBroadcaster*) override; // scanned list changed
 
     DeviceHub& devices;
     InflightLog& inflight;
@@ -93,6 +99,8 @@ private:
     std::map<juce::String, juce::String> slotErrors;
     std::map<juce::String, std::unique_ptr<PluginWindow>> windows;
     std::set<juce::String> excluded;   // slots temporarily kept out of the plan
+    std::set<juce::String> unprepared; // excluded until the engines let go, then re-prepared
+    std::set<juce::String> awaitingScan; // plugin not scanned on this Mac: retried after a scan
     juce::String routingError;
     std::map<juce::String, juce::String> homes;
     std::map<juce::String, std::shared_ptr<ClockBridge>> bridges;
@@ -101,6 +109,7 @@ private:
     int alignedLatency = 0;
     bool alignRacks = true;
     std::atomic<bool> latencyDirty { false };
+    std::map<juce::String, std::unique_ptr<SlotListener>> listeners; // after latencyDirty: they use it
 
     double preparedRate = 0.0;
     int preparedBlock = 0;

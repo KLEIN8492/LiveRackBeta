@@ -44,6 +44,9 @@ private:
     std::vector<std::pair<juce::String, juce::Rectangle<int>>> captions;
     juce::String statusText;
     juce::Colour statusColour;
+    juce::String rackCpuText;
+    float rackCpuPeak = 0.0f;
+    int rackCpuTicks = 0;
 
     juce::Viewport viewport;
     juce::Component rowHolder;

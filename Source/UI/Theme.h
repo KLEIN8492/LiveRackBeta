@@ -183,15 +183,23 @@ public:
     }
 };
 
+inline int meterSegments (int width) { return juce::jmax (4, width / 5); }
+
+// Lit segments for a peak: what a meter shows, so callers repaint only when it changes.
+inline int meterSegmentsLit (float peak, int width)
+{
+    const float db = juce::Decibels::gainToDecibels (peak, -60.0f);
+    return juce::roundToInt (juce::jlimit (0.0f, 1.0f, (db + 60.0f) / 60.0f) * (float) meterSegments (width));
+}
+
 // Segmented horizontal peak meter: green to -12 dB, amber to -3 dB, red above.
 inline void drawMeter (juce::Graphics& g, juce::Rectangle<int> r, float peak)
 {
     g.setColour (bg);
     g.fillRect (r);
 
-    const float db = juce::Decibels::gainToDecibels (peak, -60.0f);
-    const int segments = juce::jmax (4, r.getWidth() / 5);
-    const int lit = juce::roundToInt (juce::jlimit (0.0f, 1.0f, (db + 60.0f) / 60.0f) * (float) segments);
+    const int segments = meterSegments (r.getWidth());
+    const int lit = meterSegmentsLit (peak, r.getWidth());
     const float segW = (float) r.getWidth() / (float) segments;
 
     for (int i = 0; i < segments; ++i)

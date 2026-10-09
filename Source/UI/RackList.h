@@ -27,13 +27,22 @@ private:
     void selectedRowsChanged (int lastRowSelected) override;
 
     void addRack (int channels);
+    juce::Colour statusColour (const juce::ValueTree& rack) const;
+    static juce::Rectangle<int> meterArea (int rowWidth, int rowHeight);
 
     AppContext& ctx;
     juce::ListBox list { "Racks", this };
     juce::TextButton addMono { "+ MONO RACK" }, addStereo { "+ STEREO RACK" };
     juce::String selectedId;
 
-    struct Meters { MeterSmoother in, out; };
+    // Per rack, what is on screen: tick() repaints only what changed.
+    struct Meters
+    {
+        MeterSmoother in, out;
+        int inLit = -1, outLit = -1;
+        juce::Colour status;
+    };
     std::map<juce::String, Meters> meters;
+    std::map<juce::String, juce::String> routingText; // built in refresh(), not per paint
 };
 } // namespace lr

@@ -25,6 +25,7 @@ struct SlotRuntime
     std::atomic<float>       processMs      { 0.0f };
     std::atomic<bool>        inProcess      { false };
     std::atomic<bool>        silentOutput   { false }; // signal in, digital zero out for a while
+    std::atomic<bool>        stateChanged   { false }; // edited since its state was last saved
 
     int silentSamples = 0;    // audio thread only
 

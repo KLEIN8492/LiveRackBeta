@@ -76,7 +76,10 @@ void WorkerPool::run (int n, TaskFn fn, void* ctx)
     if (n <= 0)
         return;
 
-    if (workers.empty() || n == 1)
+    // Wake only the helpers this batch can use: the caller takes one item.
+    const int wake = juce::jmin (n - 1, getActiveWorkers());
+
+    if (wake <= 0)
     {
         for (int i = 0; i < n; ++i)
             fn (ctx, i);
@@ -91,7 +94,8 @@ void WorkerPool::run (int n, TaskFn fn, void* ctx)
     epoch = (epochOf (dispatch.load (std::memory_order_relaxed)) + 1) & 0xffffffu; // 24-bit epoch
     const uint64_t packed = ((uint64_t) epoch << (indexBits + countBits)) | ((uint64_t) n << indexBits);
     dispatch.store (packed, std::memory_order_release);
-    dispatch.notify_all();
+    for (int i = 0; i < wake; ++i)
+        dispatch.notify_one();
 
     workOn (epoch);
 

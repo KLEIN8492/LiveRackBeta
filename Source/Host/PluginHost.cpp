@@ -6,10 +6,42 @@
 
 namespace lr
 {
+// Watches one plugin. Plugins may call this from any thread (including
+// audio), so it only sets flags.
+class PluginHost::SlotListener final : public juce::AudioProcessorListener
+{
+public:
+    SlotListener (std::shared_ptr<SlotRuntime> s, std::atomic<bool>& latency)
+        : slot (std::move (s)), latencyDirty (latency)
+    {
+        slot->plugin->addListener (this);
+    }
+
+    ~SlotListener() override { slot->plugin->removeListener (this); }
+
+    void audioProcessorParameterChanged (juce::AudioProcessor*, int, float) override
+    {
+        slot->stateChanged.store (true, std::memory_order_relaxed);
+    }
+
+    void audioProcessorChanged (juce::AudioProcessor*, const ChangeDetails& details) override
+    {
+        if (details.latencyChanged)
+            latencyDirty.store (true);
+        if (details.parameterInfoChanged || details.programChanged || details.nonParameterStateChanged)
+            slot->stateChanged.store (true, std::memory_order_relaxed);
+    }
+
+private:
+    std::shared_ptr<SlotRuntime> slot;
+    std::atomic<bool>& latencyDirty;
+};
+
 PluginHost::PluginHost (DeviceHub& hub, InflightLog& log)
     : devices (hub), inflight (log)
 {
     juce::addDefaultFormatsToManager (formatManager);
+    knownPlugins.addChangeListener (this);
     preparedRate = devices.getSampleRate();
     preparedBlock = juce::jmax (devices.getBlockSize(), devices.getMaxOpenBlockSize());
 
@@ -34,15 +66,12 @@ void PluginHost::setAlignRacks (bool b)
     rebuildPlan();
 }
 
-// Plugins may call this from any thread (including audio): just set a flag.
-void PluginHost::audioProcessorChanged (juce::AudioProcessor*, const ChangeDetails& details)
-{
-    if (details.latencyChanged)
-        latencyDirty.store (true);
-}
-
 void PluginHost::timerCallback()
 {
+    // Slots whose re-prepare had to wait for a stuck interface: retry without blocking.
+    if (! unprepared.empty() && waitForEngines (0))
+        prepareUnprepared();
+
     bool rebuild = latencyDirty.exchange (false);
 
     // A bridge that grew its latency during warm-up, or locked it, changes
@@ -68,11 +97,11 @@ void PluginHost::clearAllPlans()
         o->engine->clearPlan();
 }
 
-bool PluginHost::waitForEngines()
+bool PluginHost::waitForEngines (int timeoutMs)
 {
     bool ok = true;
     for (auto& o : devices.getOpen())
-        ok &= o->engine->waitUntilOldPlansReleased (1000);
+        ok &= o->engine->waitUntilOldPlansReleased (timeoutMs);
     return ok;
 }
 
@@ -87,9 +116,8 @@ PluginHost::~PluginHost()
     *alive = false;
     stopTimer();
     cancelPendingUpdate();
-    for (auto& [id, slot] : slots)
-        if (slot->plugin != nullptr)
-            slot->plugin->removeListener (this);
+    knownPlugins.removeChangeListener (this);
+    listeners.clear();
     devices.onChanged = nullptr;
     show.removeListener (this);
     windows.clear();
@@ -127,17 +155,16 @@ void PluginHost::setShow (juce::ValueTree newShow)
     clearAllPlans();
     waitForEngines();
 
+    listeners.clear();
     for (auto& [id, slot] : slots)
-    {
-        if (slot->plugin != nullptr)
-            slot->plugin->removeListener (this);
         inflight.releaseRecord (slot->inflightRecord);
-    }
 
     slots.clear();
     racks.clear();
     slotErrors.clear();
     excluded.clear();
+    unprepared.clear();
+    awaitingScan.clear();
 
     show = newShow;
     show.addListener (this);
@@ -169,28 +196,82 @@ void PluginHost::detachSlot (const juce::String& slotId)
 {
     closeEditor (slotId);
 
+    listeners.erase (slotId);
     if (auto it = slots.find (slotId); it != slots.end())
     {
-        if (it->second->plugin != nullptr)
-            it->second->plugin->removeListener (this);
         inflight.releaseRecord (it->second->inflightRecord);
         slots.erase (it); // the retired plan keeps it alive until the audio thread lets go
     }
 
     slotErrors.erase (slotId);
     excluded.erase (slotId);
+    unprepared.erase (slotId);
+    awaitingScan.erase (slotId);
+}
+
+// A show only *names* its plugins. What loads is always the entry the
+// out-of-process scanner tested on this Mac, so a show from another rig (or a
+// crafted file) can never pull an untested or blacklisted binary in-process.
+bool PluginHost::resolveScanned (const juce::PluginDescription& wanted, juce::PluginDescription& out) const
+{
+    const auto& blacklist = knownPlugins.getBlacklistedFiles();
+    const auto types = knownPlugins.getTypes();
+    const juce::PluginDescription* match = nullptr;
+
+    for (auto& t : types)
+    {
+        if (t.pluginFormatName != wanted.pluginFormatName || blacklist.contains (t.fileOrIdentifier))
+            continue;
+
+        if (t.isDuplicateOf (wanted))
+        {
+            match = &t;   // same plugin, same file
+            break;
+        }
+
+        if (match == nullptr && t.uniqueId != 0 && t.uniqueId == wanted.uniqueId && t.name == wanted.name)
+            match = &t;   // same plugin installed at another path (show made on another Mac)
+    }
+
+    if (match == nullptr)
+        return false;
+
+    out = *match;
+    return true;
+}
+
+void PluginHost::changeListenerCallback (juce::ChangeBroadcaster*)
+{
+    // The scanned list changed: load slots that were waiting for their plugin.
+    const auto waiting = awaitingScan;
+    awaitingScan.clear();
+
+    for (auto& id : waiting)
+        if (auto node = show::findSlot (show, id); node.isValid() && slots.count (id) > 0)
+            createInstance (node);
+
+    notify();
 }
 
 void PluginHost::createInstance (juce::ValueTree slot)
 {
     const auto slotId = slot[ids::id].toString();
-    juce::PluginDescription desc;
+    juce::PluginDescription stored, desc;
 
-    if (! show::getPluginDescription (slot, desc))
+    if (! show::getPluginDescription (slot, stored))
     {
         slotErrors[slotId] = "Missing plugin description";
         return;
     }
+
+    if (! resolveScanned (stored, desc))
+    {
+        slotErrors[slotId] = "Not scanned on this Mac: scan it in Settings (it loads automatically)";
+        awaitingScan.insert (slotId);
+        return;
+    }
+
+    slotErrors.erase (slotId);
 
     const double rate = preparedRate > 0 ? preparedRate : 48000.0;
     const int block = preparedBlock > 0 ? preparedBlock : 512;
@@ -226,8 +307,9 @@ void PluginHost::createInstance (juce::ValueTree slot)
                     instance->setStateInformation (data.getData(), (int) data.getSize());
             }
 
-            instance->addListener (this);
             it->second->plugin = std::move (instance);
+            it->second->stateChanged = state.isEmpty(); // a new plugin's defaults get saved once
+            listeners[slotId] = std::make_unique<SlotListener> (it->second, latencyDirty);
             slotErrors.erase (slotId);
             rebuildPlan();
         });
@@ -254,24 +336,45 @@ void PluginHost::prepare (juce::AudioPluginInstance& plugin)
 void PluginHost::reconfigureSlots (const std::vector<juce::String>& slotIds)
 {
     for (auto& id : slotIds)
+    {
         excluded.insert (id);
+        unprepared.insert (id);
+    }
 
     rebuildPlan();
-    const bool released = waitForEngines();
 
-    for (auto& id : slotIds)
+    if (waitForEngines())
+    {
+        prepareUnprepared();
+        return;
+    }
+
+    // An interface is stuck and may still be running these plugins: never
+    // touch them, and never put them back unprepared (they could receive
+    // bigger blocks than they allocated for). Their racks pass dry until the
+    // timer sees the engines let go.
+    for (auto& id : unprepared)
+        slotErrors[id] = "Waiting for an interface to recover (passing dry)";
+    notify();
+}
+
+// Engines have released every plan: prepare the waiting slots and put them back.
+void PluginHost::prepareUnprepared()
+{
+    for (auto& id : unprepared)
     {
         auto it = slots.find (id);
         auto node = show::findSlot (show, id);
-        // If the audio thread is stuck we must not touch a plugin it may still be running.
-        if (released && it != slots.end() && it->second->plugin != nullptr && node.isValid())
+        if (it != slots.end() && it->second->plugin != nullptr && node.isValid())
         {
             configure (*it->second->plugin, (int) node.getParent()[ids::channels]);
             prepare (*it->second->plugin);
+            slotErrors.erase (id);
         }
         excluded.erase (id);
     }
 
+    unprepared.clear();
     rebuildPlan();
 }
 
@@ -508,11 +611,16 @@ double PluginHost::getSampleRate() const
     return preparedRate > 0 ? preparedRate : 48000.0;
 }
 
-void PluginHost::captureStates()
+void PluginHost::captureStates (bool onlyChanged)
 {
     for (auto& [id, slot] : slots)
     {
         if (slot->plugin == nullptr)
+            continue;
+
+        // An open editor counts as changing: not every plugin reports its edits.
+        const bool changed = slot->stateChanged.exchange (false) || windows.count (id) > 0;
+        if (onlyChanged && ! changed)
             continue;
 
         auto node = show::findSlot (show, id);
@@ -523,6 +631,17 @@ void PluginHost::captureStates()
         slot->plugin->getStateInformation (block);
         node.setProperty (ids::state, block.toBase64Encoding(), nullptr);
     }
+}
+
+bool PluginHost::hasUncapturedState() const
+{
+    if (! windows.empty())
+        return true;
+
+    for (auto& [id, slot] : slots)
+        if (slot->stateChanged.load (std::memory_order_relaxed))
+            return true;
+    return false;
 }
 
 void PluginHost::openEditor (const juce::String& slotId)
@@ -553,7 +672,9 @@ void PluginHost::openEditor (const juce::String& slotId)
 
 void PluginHost::closeEditor (const juce::String& slotId)
 {
-    windows.erase (slotId);
+    if (windows.erase (slotId) > 0)
+        if (auto slot = getSlot (slotId))
+            slot->stateChanged = true; // capture whatever was done in the editor
 }
 
 void PluginHost::rearmSlot (const juce::String& slotId)

@@ -141,9 +141,10 @@ void AudioEngine::audioDeviceAboutToStart (juce::AudioIODevice* device)
         for (auto& job : plan->jobs)
             for (auto& sj : job.slots)
                 sj.slot->plugin->audioWorkgroupContextChanged (workgroup);
-    // The host divides the performance cores between open interfaces.
-    const int workers = juce::jmin (maxWorkers.load(), performanceCoreCount() - 1);
-    startWorkers (juce::jmax (0, workers), device->getWorkgroup(), blockSize, sampleRate);
+    // A thread per spare performance core; the host's share (setMaxWorkers)
+    // decides how many run, so it can change while the device keeps playing.
+    startWorkers (juce::jmax (0, performanceCoreCount() - 1), device->getWorkgroup(), blockSize, sampleRate);
+    pool.setActiveWorkers (maxWorkers.load());
     running.store (true);
 }
 

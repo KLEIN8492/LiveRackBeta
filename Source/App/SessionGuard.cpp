@@ -10,7 +10,7 @@ namespace
 {
 constexpr int tickMs = 250;
 constexpr int debounceMs = 500;
-constexpr int fullSaveEveryMs = 30000;
+constexpr int pluginSaveEveryMs = 30000; // plugin edits are captured at most this often
 constexpr int stallTicks = 4; // ~1 s of the audio thread stuck inside a callback
 } // namespace
 
@@ -92,7 +92,7 @@ void SessionGuard::markDirty()
     lastChange = juce::Time::getMillisecondCounter();
 }
 
-void SessionGuard::saveNow()
+void SessionGuard::saveNow (bool allPluginStates)
 {
     if (host == nullptr)
         return;
@@ -105,7 +105,7 @@ void SessionGuard::saveNow()
         watchedShow.addListener (this);
     }
 
-    host->captureStates();
+    host->captureStates (! allPluginStates);
 
     // Keep a known-good copy at most 5 minutes old, in case the autosave is
     // ever damaged (the write itself is atomic: temp file + rename).
@@ -124,7 +124,13 @@ void SessionGuard::timerCallback()
 {
     const auto now = juce::Time::getMillisecondCounter();
 
-    if ((dirty && now - lastChange > (juce::uint32) debounceMs) || now - lastFullSave > (juce::uint32) fullSaveEveryMs)
+    // Show edits save after a short debounce. Plugin edits are batched: asking
+    // a plugin for its state can stall its audio, so nothing is captured
+    // while nothing changed.
+    const bool showEdited = dirty && now - lastChange > (juce::uint32) debounceMs;
+    const bool pluginsEdited = now - lastFullSave > (juce::uint32) pluginSaveEveryMs && host->hasUncapturedState();
+
+    if (showEdited || pluginsEdited)
         saveNow();
 
     checkForStall();

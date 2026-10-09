@@ -30,9 +30,10 @@ public:
     void setInflightLog (InflightLog* log) noexcept   { inflight = log; }
     void setGlobalBypass (bool b) noexcept            { globalBypass.store (b); }
 
-    // Real-time worker threads this engine may start (the host shares the
-    // performance cores between interfaces). Applied on the next device start.
-    void setMaxWorkers (int n) noexcept               { maxWorkers = n; }
+    // Real-time workers this engine may use at once (the host shares the
+    // performance cores between interfaces). Takes effect immediately; threads
+    // beyond it stay asleep.
+    void setMaxWorkers (int n) noexcept               { maxWorkers = n; pool.setActiveWorkers (n); }
     bool isGlobalBypassed() const noexcept            { return globalBypass.load(); }
 
     // Starts the real-time workers. Done automatically when a device starts;
@@ -56,7 +57,7 @@ public:
     std::atomic<uint32_t> maxCallbackUs { 0 };   // time spent inside one callback
     std::atomic<uint32_t> maxGapUs      { 0 };    // time between two callback starts
     std::atomic<int>      lastNumSamples { 0 };
-    int getNumWorkers() const noexcept { return pool.getNumWorkers(); }
+    int getNumWorkers() const noexcept { return pool.getActiveWorkers(); }
 
     // ---- juce::AudioIODeviceCallback ----
     void audioDeviceIOCallbackWithContext (const float* const* inputs, int numInputs,

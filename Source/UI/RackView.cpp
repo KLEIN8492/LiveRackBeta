@@ -76,7 +76,15 @@ public:
             const auto fault = rt->fault.load();
             const double sr = ctx.host.getSampleRate();
             next.latency = juce::String (1000.0 * ctx.host.getSlotLatencySamples (slotId()) / sr, 2);
-            next.cpu = juce::String (rt->processMs.load(), 3);
+            // Worst over ~0.5 s: readable, and the row isn't redrawn every frame.
+            cpuPeak = juce::jmax (cpuPeak, rt->processMs.load());
+            next.cpu = cells.cpu;
+            if (++cpuTicks >= cpuTicksPerUpdate || cells.cpu == "-")
+            {
+                next.cpu = juce::String (cpuPeak, 3);
+                cpuPeak = 0.0f;
+                cpuTicks = 0;
+            }
 
             if (fault != FaultReason::none)
             {
@@ -183,6 +191,10 @@ public:
     };
 
 private:
+    static constexpr int cpuTicksPerUpdate = 15;
+    float cpuPeak = 0.0f;
+    int cpuTicks = 0;
+
     struct Cells
     {
         juce::String name, maker, latency { "-" }, cpu { "-" }, status;
@@ -321,6 +333,17 @@ void RackView::tick()
         row->update();
 
     auto rt = ctx.host.getRack (rack[ids::id].toString());
+
+    // Worst over ~0.5 s, like the slot rows.
+    if (rt != nullptr)
+        rackCpuPeak = juce::jmax (rackCpuPeak, rt->processMs.load());
+    if (++rackCpuTicks >= 15 || rackCpuText.isEmpty())
+    {
+        rackCpuText = juce::String (rackCpuPeak, 3);
+        rackCpuPeak = 0.0f;
+        rackCpuTicks = 0;
+    }
+
     const bool dry = rt != nullptr && rt->dryFallback.load();
 
     juce::String text;
@@ -352,7 +375,7 @@ void RackView::tick()
         const double ms = 1000.0 * ctx.host.getRackLatency (id) / ctx.host.getSampleRate();
         text = "RUNNING on " + ctx.host.getHome (id)
              + "   LAT " + juce::String (ms, 2) + " ms" + (ctx.host.isAligningRacks() ? " (aligned)" : "")
-             + "   cpu " + juce::String (rt->processMs.load(), 3) + " ms";
+             + "   cpu " + rackCpuText + " ms";
         colour = theme::accent;
     }
 
@@ -363,7 +386,7 @@ void RackView::tick()
     {
         statusText = text;
         statusColour = colour;
-        repaint();
+        repaint (statusArea);
     }
 }
 
@@ -478,7 +501,7 @@ void RackView::showPortMenu (bool isInput)
 
 void RackView::showPluginBrowser()
 {
-    auto browser = std::make_unique<PluginBrowser> (ctx.host.getKnownPlugins(),
+    auto browser = std::make_unique<PluginBrowser> (ctx.host.getKnownPlugins(), ctx.settings,
         [this] (const juce::PluginDescription& desc)
         {
             if (rack.isValid())

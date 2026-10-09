@@ -44,6 +44,7 @@ public:
         juce::String name;
         std::unique_ptr<AudioEngine> engine;               // destroyed after the device
         std::unique_ptr<juce::AudioIODevice> device;
+        juce::uint32 openedAt = 0;                         // ms counter
     };
     const std::vector<std::unique_ptr<Open>>& getOpen() const noexcept { return open; }
     AudioEngine* engineFor (const juce::String& name) const;
@@ -70,7 +71,9 @@ private:
     bool openOne (const juce::String& name);
     void closeOne (const juce::String& name);
     void reconcile();
-    void updateBoost();
+    void updateBoost();          // also re-shares the cores between engines
+    int workerShare (int interfaces, bool boosting);
+    void scheduleRetry (const juce::String& name, juce::uint32 now);
 
     std::unique_ptr<juce::AudioIODeviceType> type;
     std::vector<Info> available;
@@ -82,7 +85,8 @@ private:
     std::map<juce::String, int> restarts;
     struct Watch { uint64_t beat = 0; int stalledMs = 0; };
     std::map<juce::String, Watch> watch;
-    juce::uint32 lastRetry = 0;
+    struct Retry { int failures = 0; juce::uint32 due = 0; };  // reopen back-off per interface
+    std::map<juce::String, Retry> retries;
 
     double sampleRate = 48000.0;
     int blockSize = 64;

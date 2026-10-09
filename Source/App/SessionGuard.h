@@ -33,7 +33,7 @@ public:
 
     // Starts autosave and the stall detector for this host/engine.
     void watch (PluginHost&, DeviceHub&);
-    void saveNow();
+    void saveNow (bool allPluginStates = false);   // false: only plugins with edits
 
     // Call from a clean shutdown, after the final save.
     void endCleanly();

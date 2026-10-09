@@ -287,6 +287,22 @@ public:
 
             for (int c = 0; c < Harness::numChannels; ++c)
                 expectWithinAbsoluteError (h2.outAt (c), h1.outAt (c), 1e-5f);
+
+            // The host re-shares cores while audio runs: any cap, including
+            // none and changing it mid-stream, must give identical audio.
+            AudioEngine capped;
+            capped.startWorkers (3, {}, Harness::block, 48000.0);
+            Harness h3;
+            capped.setPlan (build (makeRacks()));
+            for (int i = 0; i < 200; ++i)
+            {
+                capped.setMaxWorkers (i % 4); // 0 (caller only) .. 3
+                h3.run (capped);
+            }
+
+            expectEquals (capped.getNumWorkers(), 3);
+            for (int c = 0; c < Harness::numChannels; ++c)
+                expectWithinAbsoluteError (h3.outAt (c), h1.outAt (c), 1e-5f);
         }
 
         beginTest ("a plugin that outputs silence for 2 s is flagged, not bypassed");
