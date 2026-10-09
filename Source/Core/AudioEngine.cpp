@@ -134,6 +134,14 @@ void AudioEngine::audioDeviceAboutToStart (juce::AudioIODevice* device)
     const auto sampleRate = device->getCurrentSampleRate();
 
     loadMeasurer.reset (sampleRate, blockSize);
+
+    // Each device start brings a new workgroup: plugins with their own
+    // processing threads must rejoin it to be scheduled as real-time.
+    const auto workgroup = device->getWorkgroup();
+    if (auto* plan = current.load (std::memory_order_acquire))
+        for (auto& job : plan->jobs)
+            for (auto& sj : job.slots)
+                sj.slot->plugin->audioWorkgroupContextChanged (workgroup);
     const bool useBoost = boostEnabled.load() && blockSize <= boostMaxBlock;
     if (useBoost) boost.start(); else boost.stop();
 

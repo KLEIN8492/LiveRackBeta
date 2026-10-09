@@ -30,6 +30,7 @@ add_library(LiveRackCore STATIC
     Source/Core/AudioEngine.cpp
     Source/Core/InflightLog.cpp
     Source/Core/PluginLayout.cpp
+    Source/Core/MacActivity.mm
 )
 
 target_link_libraries(LiveRackCore

@@ -1,6 +1,7 @@
 #include <juce_audio_utils/juce_audio_utils.h>
 #include "SessionGuard.h"
 #include "DiagnosticsLog.h"
+#include "Core/MacActivity.h"
 #include "Host/PluginHost.h"
 #include "Host/OutOfProcessScanner.h"
 #include "UI/MainComponent.h"
@@ -39,6 +40,7 @@ public:
     void initialise (const juce::String&) override
     {
         session.begin();
+        latencyCritical = std::make_unique<LatencyCriticalActivity> ("LiveRack is processing live audio");
 
         juce::PropertiesFile::Options options;
         options.applicationName = "LiveRack";
@@ -133,6 +135,7 @@ public:
         host.reset();
 
         session.endCleanly();
+        latencyCritical.reset();
     }
 
     void systemRequestedQuit() override
@@ -274,6 +277,7 @@ private:
     MainComponent* mainComponent = nullptr;
     std::unique_ptr<juce::FileChooser> chooser;
     std::unique_ptr<DiagnosticsLog> diagnostics;
+    std::unique_ptr<LatencyCriticalActivity> latencyCritical;
     juce::File currentFile;
 };
 } // namespace lr

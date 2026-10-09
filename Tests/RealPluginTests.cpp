@@ -7,6 +7,7 @@
 #include "Core/PlanBuilder.h"
 #include "Core/PluginLayout.h"
 #include "Core/CpuBoost.h"
+#include "Core/MacActivity.h"
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <thread>
 
@@ -20,6 +21,14 @@ public:
     void runTest() override
     {
         juce::addDefaultFormatsToManager (formats);
+
+        // A/B switch for the latency-critical activity (LIVERACK_BENCH_ACTIVITY=1).
+        std::unique_ptr<LatencyCriticalActivity> activity;
+        if (std::getenv ("LIVERACK_BENCH_ACTIVITY") != nullptr)
+        {
+            activity = std::make_unique<LatencyCriticalActivity> ("benchmark");
+            logMessage ("  latency-critical activity: ON");
+        }
 
         runPlugin ("VST3", "/Library/Audio/Plug-Ins/VST3/Defeedback.vst3", "De-Feedback");
         // The user's live target: 1-3 ms round trip => 32 samples @ 48 kHz.
