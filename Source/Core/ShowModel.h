@@ -2,6 +2,7 @@
 
 #include <juce_audio_processors/juce_audio_processors.h>
 #include "Ids.h"
+#include "PortRef.h"
 #include <vector>
 
 // Helpers for the show ValueTree (schema in Ids.h).
@@ -22,6 +23,18 @@ juce::StringArray parseIds (const juce::String&);
 
 std::vector<int> getChannels (const juce::ValueTree& rack, const juce::Identifier& prop);
 void setChannels (juce::ValueTree rack, const juce::Identifier& prop, const std::vector<int>&);
+
+// Interface-aware rack ports (inputs / outputs).
+std::vector<PortRef> getPorts (const juce::ValueTree& rack, const juce::Identifier& prop);
+void setPorts (juce::ValueTree rack, const juce::Identifier& prop, const std::vector<PortRef>&);
+
+// Converts v1 numeric channel lists to ports on the given devices (as stored in
+// device.xml). Returns the number of racks changed. Lists with no known device
+// are cleared rather than guessed.
+int migrateLegacyPorts (juce::ValueTree show, const juce::String& inputDevice, const juce::String& outputDevice);
+
+// "Dante Virtual Soundcard 1-2, MacBook Pro Microphone 1"
+juce::String describePorts (const std::vector<PortRef>&);
 
 bool getPluginDescription (const juce::ValueTree& slot, juce::PluginDescription& out);
 

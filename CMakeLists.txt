@@ -31,6 +31,8 @@ add_library(LiveRackCore STATIC
     Source/Core/InflightLog.cpp
     Source/Core/PluginLayout.cpp
     Source/Core/MacActivity.mm
+    Source/Core/PortRef.cpp
+    Source/Core/ClockBridge.cpp
 )
 
 target_link_libraries(LiveRackCore
@@ -118,6 +120,8 @@ target_sources(LiveRackTests PRIVATE
     Tests/EngineTests.cpp
     Tests/InflightLogTests.cpp
     Tests/ShowModelTests.cpp
+    Tests/PortRefTests.cpp
+    Tests/ClockBridgeTests.cpp
     Tests/RealPluginTests.cpp
     Tests/DeviceBenchTests.cpp)
 target_link_libraries(LiveRackTests PRIVATE LiveRackCore)

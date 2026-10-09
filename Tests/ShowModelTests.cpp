@@ -20,10 +20,10 @@ public:
         {
             auto s = show::createEmpty();
             auto a = show::addRack (s, "Kick", 1);
-            show::setChannels (a, ids::inputs, { 0 });
-            show::setChannels (a, ids::outputs, { 2, 3 });
-            expect (show::describeRouting (a, s).startsWith ("In 1"));
-            expect (show::describeRouting (a, s).endsWith ("Out 3-4"));
+            show::setPorts (a, ids::inputs, { { "Dante", 0 } });
+            show::setPorts (a, ids::outputs, { { "Dante", 2 }, { "Dante", 3 }, { "USB", 0 } });
+            expect (show::describeRouting (a, s).startsWith ("Dante 1 "), show::describeRouting (a, s));
+            expect (show::describeRouting (a, s).endsWith ("Dante 3-4, USB 1"), show::describeRouting (a, s));
 
             auto bus = show::addRack (s, "Drums", 2);
             bus.setProperty (ids::sources, a[ids::id], nullptr);
@@ -35,7 +35,7 @@ public:
             auto s = show::createEmpty();
             auto vox = show::addRack (s, "Lead Vox", 1);
             vox.setProperty (ids::critical, true, nullptr);
-            show::setChannels (vox, ids::inputs, { 0 });
+            show::setPorts (vox, ids::inputs, { { "Dante Virtual Soundcard", 0 } });
 
             juce::PluginDescription desc;
             desc.name = "Defeedback";

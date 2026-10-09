@@ -105,6 +105,61 @@ void setChannels (juce::ValueTree rack, const juce::Identifier& prop, const std:
     rack.setProperty (prop, formatChannels (channels), nullptr);
 }
 
+std::vector<PortRef> getPorts (const juce::ValueTree& rack, const juce::Identifier& prop)
+{
+    return decodePorts (rack[prop].toString());
+}
+
+void setPorts (juce::ValueTree rack, const juce::Identifier& prop, const std::vector<PortRef>& ports)
+{
+    rack.setProperty (prop, encodePorts (ports), nullptr);
+}
+
+int migrateLegacyPorts (juce::ValueTree show, const juce::String& inputDevice, const juce::String& outputDevice)
+{
+    int changed = 0;
+    for (auto rack : getRacks (show))
+    {
+        bool touched = false;
+        for (auto [prop, device] : { std::pair { ids::inputs, inputDevice }, std::pair { ids::outputs, outputDevice } })
+        {
+            const auto text = rack[prop].toString();
+            if (! isLegacyChannelList (text))
+                continue;
+
+            std::vector<PortRef> ports;
+            if (device.isNotEmpty())
+                for (int ch : parseChannels (text))
+                    ports.push_back ({ device, ch });
+
+            setPorts (rack, prop, ports);
+            touched = true;
+        }
+        changed += touched ? 1 : 0;
+    }
+    return changed;
+}
+
+static juce::String channelSummary (std::vector<int> chans);
+
+juce::String describePorts (const std::vector<PortRef>& ports)
+{
+    if (ports.empty())
+        return "-";
+
+    juce::StringArray groups;
+    size_t i = 0;
+    while (i < ports.size())
+    {
+        std::vector<int> chans;
+        const auto device = ports[i].device;
+        for (; i < ports.size() && ports[i].device == device; ++i)
+            chans.push_back (ports[i].channel);
+        groups.add (device + " " + channelSummary (chans));
+    }
+    return groups.joinIntoString (", ");
+}
+
 bool getPluginDescription (const juce::ValueTree& slot, juce::PluginDescription& out)
 {
     if (auto xml = juce::parseXML (slot[ids::plugin].toString()))
@@ -145,10 +200,10 @@ juce::String describeRouting (const juce::ValueTree& rack, const juce::ValueTree
     }
     else
     {
-        in = "In " + channelSummary (getChannels (rack, ids::inputs));
+        in = describePorts (getPorts (rack, ids::inputs));
     }
 
-    return in + juce::String (juce::CharPointer_UTF8 (" \xe2\x86\x92 Out ")) + channelSummary (getChannels (rack, ids::outputs));
+    return in + juce::String (juce::CharPointer_UTF8 (" \xe2\x86\x92 ")) + describePorts (getPorts (rack, ids::outputs));
 }
 
 bool saveToFile (const juce::ValueTree& show, const juce::File& file)
