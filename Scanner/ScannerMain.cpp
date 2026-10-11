@@ -19,7 +19,9 @@ int main (int argc, char* argv[])
     lr::platform::configureCrashHandling();
 
     juce::ScopedJuceInitialiser_GUI juceInit;
+   #if JUCE_MAC
     juce::Process::setDockIconVisible (false);
+   #endif
 
     juce::AudioPluginFormatManager formats;
     juce::addDefaultFormatsToManager (formats);

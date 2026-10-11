@@ -42,7 +42,13 @@ jobs:
         run: cmake -B build -DCMAKE_BUILD_TYPE=Release
 
       - name: Build
-        run: cmake --build build --config Release --parallel 4
+        run: |
+          # Keep going after an error (make), so one run shows every problem.
+          if [ "$RUNNER_OS" = Windows ]; then
+            cmake --build build --config Release --parallel 4
+          else
+            cmake --build build --config Release --parallel 4 -- -k
+          fi
 
       - name: Core tests
         run: |
