@@ -1,24 +1,83 @@
 #include "DeviceHub.h"
-#include <sys/sysctl.h>
+#include "Platform/Platform.h"
+#include <algorithm>
 
 namespace lr
 {
 namespace
 {
-int performanceCores()
+// "Speakers (Focusrite USB Audio)" -> "Focusrite USB Audio": the hardware a
+// WASAPI endpoint belongs to (the final parenthesised group, nesting allowed:
+// "Speakers (Realtek(R) Audio)" -> "Realtek(R) Audio").
+juce::String hardwareOf (const juce::String& endpoint)
 {
-    int count = 0;
-    size_t size = sizeof (count);
-    if (sysctlbyname ("hw.perflevel0.physicalcpu", &count, &size, nullptr, 0) == 0 && count > 0)
-        return count;
-    return juce::SystemStats::getNumPhysicalCpus();
+    if (! endpoint.endsWithChar (')'))
+        return {};
+
+    int depth = 0;
+    for (int i = endpoint.length() - 1; i >= 0; --i)
+    {
+        const auto c = endpoint[i];
+        if (c == ')') ++depth;
+        if (c == '(' && --depth == 0)
+            return endpoint.substring (i + 1, endpoint.length() - 1).trim();
+    }
+    return {};
 }
 } // namespace
 
-DeviceHub::DeviceHub()
-    : type (juce::AudioIODeviceType::createAudioIODeviceType_CoreAudio())
+std::vector<EndpointGroup> groupEndpoints (const juce::StringArray& ins, const juce::StringArray& outs, bool pairByHardware)
 {
-    type->addListener (this);
+    std::vector<EndpointGroup> groups;
+
+    for (auto& n : outs)
+        if (ins.contains (n))
+            groups.push_back ({ n, n, n });
+
+    juce::StringArray lonelyIns, lonelyOuts;
+    for (auto& n : ins)  if (! outs.contains (n)) lonelyIns.add (n);
+    for (auto& n : outs) if (! ins.contains (n))  lonelyOuts.add (n);
+
+    if (pairByHardware)
+    {
+        auto count = [] (const juce::StringArray& list, const juce::String& hw)
+        {
+            int c = 0;
+            for (auto& n : list) c += hardwareOf (n) == hw ? 1 : 0;
+            return c;
+        };
+
+        juce::StringArray pairedIns, pairedOuts;
+        for (auto& out : lonelyOuts)
+        {
+            const auto hw = hardwareOf (out);
+            // Ambiguous (e.g. Speakers + S/PDIF on one chip): list endpoints separately.
+            if (hw.isEmpty() || count (lonelyOuts, hw) != 1 || count (lonelyIns, hw) != 1)
+                continue;
+
+            for (auto& in : lonelyIns)
+                if (hardwareOf (in) == hw)
+                {
+                    groups.push_back ({ hw, in, out });
+                    pairedIns.add (in);
+                    pairedOuts.add (out);
+                }
+        }
+
+        for (auto& n : pairedIns)  lonelyIns.removeString (n);
+        for (auto& n : pairedOuts) lonelyOuts.removeString (n);
+    }
+
+    for (auto& n : lonelyOuts) groups.push_back ({ n, {}, n });
+    for (auto& n : lonelyIns)  groups.push_back ({ n, n, {} });
+    return groups;
+}
+
+DeviceHub::DeviceHub()
+    : types (platform::createAudioDeviceTypes())
+{
+    for (auto& t : types)
+        t->addListener (this);
     startTimer (250);
 }
 
@@ -120,7 +179,8 @@ void DeviceHub::timerCallback()
 DeviceHub::~DeviceHub()
 {
     stopTimer();
-    type->removeListener (this);
+    for (auto& t : types)
+        t->removeListener (this);
     while (! open.empty())
         closeOne (open.back()->name);
     boost.stop();
@@ -130,41 +190,71 @@ DeviceHub::~DeviceHub()
 
 void DeviceHub::rescan()
 {
-    type->scanForDevices();
-    available.clear();
+    std::vector<Info> found;
+    for (auto& t : types)
+        scanType (*t, types.size() > 1, found);
 
-    auto ins = type->getDeviceNames (true);
-    auto outs = type->getDeviceNames (false);
-    juce::StringArray names (outs);
-    names.addArray (ins);
-    names.removeDuplicates (false);
+    available = std::move (found);
+    scanned = true;
+}
 
-    for (auto& name : names)
+// Lists one driver type's interfaces (see groupEndpoints).
+void DeviceHub::scanType (juce::AudioIODeviceType& type, bool qualify, std::vector<Info>& found)
+{
+    type.scanForDevices();
+
+    juce::StringArray ins, outs;
+    for (auto& n : type.getDeviceNames (true))
+        if (platform::offerDevice (type, n)) ins.add (n);
+    for (auto& n : type.getDeviceNames (false))
+        if (platform::offerDevice (type, n)) outs.add (n);
+
+    auto candidates = groupEndpoints (ins, outs, platform::driverLabel (type) == "WASAPI");
+    for (auto& c : candidates)
+        if (c.in == c.out || c.in.isEmpty() || c.out.isEmpty())
+            c.shown = platform::shortDeviceName (type, c.shown);
+
+    // Creating an ASIO device object loads its driver. Never do that next to
+    // a running ASIO interface: reuse what the last scan learned instead.
+    bool typeRunning = false;
+    for (auto& o : open)
+        typeRunning |= o->type == &type;
+    const bool mayProbe = ! (typeRunning && platform::probingLoadsDriver (type));
+
+    for (auto& c : candidates)
     {
         Info info;
-        info.name = name;
+        info.type = &type;
+        info.inputDevice = c.in;
+        info.outputDevice = c.out;
+        info.name = qualify ? platform::driverLabel (type) + ": " + c.shown : c.shown;
 
-        if (auto* o = deviceFor (name))
+        for (int n = 2; std::any_of (found.begin(), found.end(), [&] (const Info& f) { return f.name == info.name; }); ++n)
+            info.name = (qualify ? platform::driverLabel (type) + ": " + c.shown : c.shown) + " " + juce::String (n);
+
+        if (auto* o = deviceFor (info.name))
         {
             info.inputs = o->getInputChannelNames();
             info.outputs = o->getOutputChannelNames();
         }
-        else
+        else if (! mayProbe)
+        {
+            for (auto& old : available)
+                if (old.name == info.name)
+                {
+                    info.inputs = old.inputs;
+                    info.outputs = old.outputs;
+                }
+        }
+        else if (std::unique_ptr<juce::AudioIODevice> probe { type.createDevice (c.out, c.in) })
         {
             // Unopened device object: only used to read channel names.
-            std::unique_ptr<juce::AudioIODevice> probe (type->createDevice (outs.contains (name) ? name : juce::String(),
-                                                                            ins.contains (name) ? name : juce::String()));
-            if (probe != nullptr)
-            {
-                info.inputs = probe->getInputChannelNames();
-                info.outputs = probe->getOutputChannelNames();
-            }
+            info.inputs = probe->getInputChannelNames();
+            info.outputs = probe->getOutputChannelNames();
         }
 
-        available.push_back (std::move (info));
+        found.push_back (std::move (info));
     }
-
-    scanned = true;
 }
 
 const std::vector<DeviceHub::Info>& DeviceHub::getAvailable()
@@ -250,18 +340,18 @@ bool DeviceHub::openOne (const juce::String& name)
         return false;
     }
 
-    // Same name for input and output => one device (no combiner).
-    std::unique_ptr<juce::AudioIODevice> device (type->createDevice (info->outputs.isEmpty() ? juce::String() : name,
-                                                                     info->inputs.isEmpty() ? juce::String() : name));
+    std::unique_ptr<juce::AudioIODevice> device (info->type->createDevice (info->outputDevice, info->inputDevice));
     if (device == nullptr)
     {
         errors[name] = "Could not create device";
         return false;
     }
 
+    // All channels, counted on the device itself (the catalogue may hold
+    // names from an earlier scan).
     juce::BigInteger ins, outs;
-    ins.setRange (0, info->inputs.size(), true);
-    outs.setRange (0, info->outputs.size(), true);
+    ins.setRange (0, device->getInputChannelNames().size(), true);
+    outs.setRange (0, device->getOutputChannelNames().size(), true);
 
     const auto err = device->open (ins, outs, sampleRate, blockSize);
     if (err.isNotEmpty())
@@ -281,6 +371,15 @@ bool DeviceHub::openOne (const juce::String& name)
     const bool willBoost = boost.isRunning() || (boostEnabled && device->getCurrentBufferSizeSamples() <= boostMaxBlock);
     entry->engine->setMaxWorkers (workerShare ((int) open.size() + 1, willBoost));
 
+    // The open device is the authority on its channels (routing menus read these).
+    for (auto& a : available)
+        if (a.name == name)
+        {
+            a.inputs = device->getInputChannelNames();
+            a.outputs = device->getOutputChannelNames();
+        }
+
+    entry->type = info->type;
     entry->device = std::move (device);
     entry->openedAt = juce::Time::getMillisecondCounter();
     entry->device->start (entry->engine.get());
@@ -350,11 +449,11 @@ void DeviceHub::setBoostEnabled (bool b)
 
 void DeviceHub::updateBoost()
 {
-    bool small = false;
+    bool smallBlocks = false;
     for (auto& o : open)
-        small |= o->device->getCurrentBufferSizeSamples() <= boostMaxBlock;
+        smallBlocks |= o->device->getCurrentBufferSizeSamples() <= boostMaxBlock;
 
-    if (boostEnabled && small)
+    if (boostEnabled && smallBlocks)
         boost.start();
     else
         boost.stop();
@@ -378,7 +477,7 @@ int DeviceHub::workerShare (int interfaces, bool boosting)
             ++wantedAvailable;
     expected = juce::jmax (1, expected, wantedAvailable);
 
-    const int spare = performanceCores() - expected - (boosting ? 1 : 0);
+    const int spare = platform::performanceCoreCount() - expected - (boosting ? 1 : 0);
     return juce::jmax (0, spare / expected);
 }
 

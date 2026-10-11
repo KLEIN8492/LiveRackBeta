@@ -38,8 +38,8 @@ public:
     static std::vector<juce::String> readSuspects (const juce::File&);
 
 private:
+    std::unique_ptr<juce::MemoryMappedFile> mapping; // shared with the file on every OS
     char* data = nullptr;
-    int fd = -1;
     std::vector<bool> used;
 };
 

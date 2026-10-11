@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=LiveRack
+Comment=Live plugin host for front of house
+Exec=@DEST@/LiveRack
+Icon=@DEST@/AppIcon.png
+Categories=AudioVideo;Audio;
+Terminal=false

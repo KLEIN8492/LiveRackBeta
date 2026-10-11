@@ -1,4 +1,5 @@
 #include "WorkerPool.h"
+#include "Platform/Platform.h"
 
 namespace lr
 {
@@ -12,6 +13,7 @@ public:
     {
         juce::WorkgroupToken token;
         workgroup.join (token);
+        platform::prepareRealtimeWorker();
         juce::FloatVectorOperations::disableDenormalisedNumberSupport (true);
 
         uint32_t lastEpoch = epochOf (pool.dispatch.load (std::memory_order_acquire));
@@ -100,11 +102,7 @@ void WorkerPool::run (int n, TaskFn fn, void* ctx)
     workOn (epoch);
 
     while (remaining.load (std::memory_order_acquire) > 0)
-    {
-       #if JUCE_ARM
-        __builtin_arm_yield();
-       #endif
-    }
+        platform::cpuRelax();
 }
 
 void WorkerPool::workOn (uint32_t batchEpoch)

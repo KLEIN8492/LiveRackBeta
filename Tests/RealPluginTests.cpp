@@ -8,7 +8,7 @@
 #include "TestHelpers.h"
 #include "Core/PluginLayout.h"
 #include "Core/CpuBoost.h"
-#include "Core/MacActivity.h"
+#include "Platform/Platform.h"
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <thread>
 
@@ -24,10 +24,10 @@ public:
         juce::addDefaultFormatsToManager (formats);
 
         // A/B switch for the latency-critical activity (LIVERACK_BENCH_ACTIVITY=1).
-        std::unique_ptr<LatencyCriticalActivity> activity;
+        std::unique_ptr<lr::platform::LatencyCriticalActivity> activity;
         if (std::getenv ("LIVERACK_BENCH_ACTIVITY") != nullptr)
         {
-            activity = std::make_unique<LatencyCriticalActivity> ("benchmark");
+            activity = std::make_unique<lr::platform::LatencyCriticalActivity> ("benchmark");
             logMessage ("  latency-critical activity: ON");
         }
 

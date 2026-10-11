@@ -1,18 +1,10 @@
 #include "AudioEngine.h"
-#include <sys/sysctl.h>
+#include "Platform/Platform.h"
 
 namespace lr
 {
 namespace
 {
-int performanceCoreCount()
-{
-    int count = 0;
-    size_t size = sizeof (count);
-    if (sysctlbyname ("hw.perflevel0.physicalcpu", &count, &size, nullptr, 0) == 0 && count > 0)
-        return count;
-    return juce::SystemStats::getNumPhysicalCpus();
-}
 
 double ticksToSeconds (juce::int64 ticks)
 {
@@ -143,7 +135,7 @@ void AudioEngine::audioDeviceAboutToStart (juce::AudioIODevice* device)
                 sj.slot->plugin->audioWorkgroupContextChanged (workgroup);
     // A thread per spare performance core; the host's share (setMaxWorkers)
     // decides how many run, so it can change while the device keeps playing.
-    startWorkers (juce::jmax (0, performanceCoreCount() - 1), device->getWorkgroup(), blockSize, sampleRate);
+    startWorkers (juce::jmax (0, platform::performanceCoreCount() - 1), device->getWorkgroup(), blockSize, sampleRate);
     pool.setActiveWorkers (maxWorkers.load());
     running.store (true);
 }

@@ -7,11 +7,28 @@
 
 namespace lr
 {
+// One interface a driver offers, from its input and output device lists:
+// a name in both lists is one interface. With `pairByHardware` (WASAPI, which
+// names every endpoint separately: "Speakers (X)", "Line In (X)"), the one
+// input and one output of the same hardware X become interface "X" too.
+// Anything else stays a single-direction interface.
+struct EndpointGroup
+{
+    juce::String shown;   // display name (before any driver prefix)
+    juce::String in, out; // driver device names, empty = none
+};
+std::vector<EndpointGroup> groupEndpoints (const juce::StringArray& ins, const juce::StringArray& outs, bool pairByHardware);
+
 // Owns every audio interface LiveRack uses. Each interface is opened on its
 // own (one AudioIODevice per interface, never JUCE's in/out combiner) with all
 // channels active at the shared sample rate and buffer size, and runs its own
 // AudioEngine in its own callback thread. Interfaces are opened when wanted
 // (referenced by a rack) and reopened when they come back after unplugging.
+//
+// Every driver type the OS offers is used at once (Core Audio; ASIO + WASAPI;
+// ALSA + JACK): clock bridges join interfaces whatever their drivers. With
+// more than one type, interface names carry the driver: "ASIO: Dante Virtual
+// Soundcard". On macOS they are plain device names, as shows always stored.
 class DeviceHub final : private juce::AudioIODeviceType::Listener,
                         private juce::Timer
 {
@@ -22,10 +39,12 @@ public:
     // ---- catalogue -------------------------------------------------------------
     struct Info
     {
-        juce::String name;
-        juce::StringArray inputs, outputs; // channel names
+        juce::String name;                                  // unique across driver types
+        juce::StringArray inputs, outputs;                  // channel names
+        juce::AudioIODeviceType* type = nullptr;
+        juce::String inputDevice, outputDevice;             // the driver's own names (empty: none)
     };
-    const std::vector<Info>& getAvailable();               // every interface on the Mac
+    const std::vector<Info>& getAvailable();               // every interface on this computer
     const Info* findAvailable (const juce::String& name);
 
     // ---- format ----------------------------------------------------------------
@@ -44,6 +63,7 @@ public:
         juce::String name;
         std::unique_ptr<AudioEngine> engine;               // destroyed after the device
         std::unique_ptr<juce::AudioIODevice> device;
+        juce::AudioIODeviceType* type = nullptr;
         juce::uint32 openedAt = 0;                         // ms counter
     };
     const std::vector<std::unique_ptr<Open>>& getOpen() const noexcept { return open; }
@@ -68,6 +88,7 @@ private:
     void audioDeviceListChanged() override;
     void timerCallback() override;   // watchdog
     void rescan();
+    void scanType (juce::AudioIODeviceType&, bool qualify, std::vector<Info>& found);
     bool openOne (const juce::String& name);
     void closeOne (const juce::String& name);
     void reconcile();
@@ -75,7 +96,7 @@ private:
     int workerShare (int interfaces, bool boosting);
     void scheduleRetry (const juce::String& name, juce::uint32 now);
 
-    std::unique_ptr<juce::AudioIODeviceType> type;
+    std::vector<std::unique_ptr<juce::AudioIODeviceType>> types;
     std::vector<Info> available;
     bool scanned = false;
 

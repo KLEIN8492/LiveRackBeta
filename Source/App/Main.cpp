@@ -1,7 +1,7 @@
 #include <juce_audio_utils/juce_audio_utils.h>
 #include "SessionGuard.h"
 #include "DiagnosticsLog.h"
-#include "Core/MacActivity.h"
+#include "Platform/Platform.h"
 #include "Host/PluginHost.h"
 #include "Host/OutOfProcessScanner.h"
 #include "UI/MainComponent.h"
@@ -45,6 +45,8 @@ public:
 
     void initialise (const juce::String& commandLine) override
     {
+        platform::configureCrashHandling();
+
         // --snapshot <dir>: render each view to PNG without opening audio, then quit.
         snapshotDir = commandLine.fromFirstOccurrenceOf ("--snapshot", false, false).trim().unquoted();
         snapshotMode = commandLine.contains ("--snapshot");
@@ -54,7 +56,7 @@ public:
         if (! snapshotMode)
         {
             session.begin();
-            latencyCritical = std::make_unique<LatencyCriticalActivity> ("LiveRack is processing live audio");
+            latencyCritical = std::make_unique<platform::LatencyCriticalActivity> ("LiveRack is processing live audio");
         }
 
         juce::PropertiesFile::Options options;
@@ -74,7 +76,7 @@ public:
         host->setAlignRacks (settings.getBoolValue ("alignRacks", true));
         host->loadKnownPlugins (session.getPluginListFile());
 
-        const auto scannerExe = juce::File::getSpecialLocation (juce::File::currentExecutableFile).getSiblingFile ("LiveRackScanner");
+        const auto scannerExe = platform::helperExecutable ("LiveRackScanner");
         host->getKnownPlugins().setCustomScanner (std::make_unique<OutOfProcessScanner> (scannerExe));
         host->getKnownPlugins().addChangeListener (this);
 
@@ -137,13 +139,21 @@ public:
                                            + ". Re-arm them when ready.",
                                  theme::warn);
         }
+        else if (const auto rt = platform::realtimeWarning(); rt.isNotEmpty() && ! snapshotMode)
+        {
+            content->showBanner (rt, theme::warn);
+        }
 
         commands.registerAllCommandsForTarget (this);
         window->addKeyListener (commands.getKeyMappings());
         setApplicationCommandManagerToWatch (&commands);
+       #if JUCE_MAC
         juce::PopupMenu appleMenu;
         appleMenu.addCommandItem (&commands, cmdSettings);
         juce::MenuBarModel::setMacMainMenu (this, &appleMenu);
+       #else
+        window->setMenuBar (this); // File menu (Settings is in it too)
+       #endif
 
         if (snapshotMode)
             juce::Timer::callAfterDelay (3000, [this]
@@ -183,7 +193,12 @@ public:
         if (host == nullptr)
             return;
 
+       #if JUCE_MAC
         juce::MenuBarModel::setMacMainMenu (nullptr);
+       #else
+        if (window != nullptr)
+            window->setMenuBar (nullptr);
+       #endif
 
         if (! snapshotMode)
         {
@@ -397,7 +412,7 @@ private:
     MainComponent* mainComponent = nullptr;
     std::unique_ptr<juce::FileChooser> chooser;
     std::unique_ptr<DiagnosticsLog> diagnostics;
-    std::unique_ptr<LatencyCriticalActivity> latencyCritical;
+    std::unique_ptr<platform::LatencyCriticalActivity> latencyCritical;
     juce::File currentFile;
     juce::String snapshotDir;
     bool snapshotMode = false;

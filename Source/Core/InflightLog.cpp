@@ -1,7 +1,4 @@
 #include "InflightLog.h"
-#include <fcntl.h>
-#include <sys/mman.h>
-#include <unistd.h>
 
 namespace lr
 {
@@ -17,38 +14,28 @@ bool InflightLog::open (const juce::File& file)
     close();
     file.getParentDirectory().createDirectory();
 
-    fd = ::open (file.getFullPathName().toRawUTF8(), O_RDWR | O_CREAT | O_TRUNC, 0644);
-    if (fd < 0)
+    // Fresh, zeroed file of the full size, then mapped read-write. Writes go
+    // to the OS's copy of the file, so they survive this process crashing.
+    juce::HeapBlock<char> zeros (fileSize, true);
+    if (! file.replaceWithData (zeros.get(), fileSize))
         return false;
 
-    if (::ftruncate (fd, (off_t) fileSize) != 0)
+    mapping = std::make_unique<juce::MemoryMappedFile> (file, juce::MemoryMappedFile::readWrite);
+    if (mapping->getData() == nullptr || mapping->getSize() < fileSize)
     {
         close();
         return false;
     }
 
-    void* mapped = ::mmap (nullptr, fileSize, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-    if (mapped == MAP_FAILED)
-    {
-        close();
-        return false;
-    }
-
-    data = static_cast<char*> (mapped);
-    std::memset (data, 0, fileSize);
+    data = static_cast<char*> (mapping->getData());
     used.assign (maxRecords, false);
     return true;
 }
 
 void InflightLog::close()
 {
-    if (data != nullptr)
-        ::munmap (data, fileSize);
-    if (fd >= 0)
-        ::close (fd);
-
+    mapping.reset();
     data = nullptr;
-    fd = -1;
     used.clear();
 }
 

@@ -1,8 +1,5 @@
 #include "SessionGuard.h"
-#include <spawn.h>
-#include <unistd.h>
-
-extern char** environ;
+#include "Platform/Platform.h"
 
 namespace lr
 {
@@ -24,8 +21,7 @@ SessionGuard::~SessionGuard()
 
 juce::File SessionGuard::getSupportDirectory()
 {
-    return juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory)
-               .getChildFile ("Application Support/LiveRack");
+    return platform::supportDirectory();
 }
 
 void SessionGuard::begin()
@@ -37,34 +33,22 @@ void SessionGuard::begin()
         suspects = InflightLog::readSuspects (inflightFile);
 
     inflight.open (inflightFile);
-    runningMarker.replaceWithText (juce::String (getpid()));
+    runningMarker.replaceWithText (juce::String (platform::processId()));
     spawnGuard();
 }
 
 void SessionGuard::spawnGuard()
 {
-    const auto exe = juce::File::getSpecialLocation (juce::File::currentExecutableFile);
-    const auto guard = exe.getSiblingFile ("LiveRackGuard");
-    const auto bundle = juce::File::getSpecialLocation (juce::File::currentApplicationFile);
+    const auto guard = platform::helperExecutable ("LiveRackGuard");
+    const auto app = platform::relaunchTarget();
 
-    if (! guard.existsAsFile() || ! bundle.getFileName().endsWith (".app"))
+    // Only a packaged build relaunches itself (not tests or a bare build dir).
+    if (! guard.existsAsFile() || ! app.exists())
         return;
 
-    const auto pid = juce::String (getpid());
-    std::string g = guard.getFullPathName().toStdString();
-    std::string b = bundle.getFullPathName().toStdString();
-    std::string m = runningMarker.getFullPathName().toStdString();
-    std::string p = pid.toStdString();
-
-    const char* args[] = { g.c_str(), "--pid", p.c_str(), "--app", b.c_str(), "--marker", m.c_str(), nullptr };
-
-    posix_spawnattr_t attr;
-    posix_spawnattr_init (&attr);
-    posix_spawnattr_setflags (&attr, POSIX_SPAWN_SETSID); // survive our death
-
-    pid_t child = 0;
-    posix_spawn (&child, g.c_str(), nullptr, &attr, const_cast<char**> (args), environ);
-    posix_spawnattr_destroy (&attr);
+    platform::spawnDetached (guard, { "--pid", juce::String (platform::processId()),
+                                      "--app", app.getFullPathName(),
+                                      "--marker", runningMarker.getFullPathName() });
 }
 
 void SessionGuard::watch (PluginHost& h, DeviceHub& d)
@@ -163,7 +147,7 @@ void SessionGuard::checkForStall()
                 slot.setProperty (ids::faultBypassed, true, nullptr);
 
     show::saveToFile (show, getAutosaveFile()); // no captureStates: plugins may be wedged
-    std::abort();
+    platform::terminateNow();
 }
 
 void SessionGuard::endCleanly()

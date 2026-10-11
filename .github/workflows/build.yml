@@ -1,0 +1,77 @@
+name: Build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: macOS,   os: macos-14 }
+          - { name: Windows, os: windows-2022 }
+          - { name: Linux,   os: ubuntu-24.04 }
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: JUCE 8.0.15
+        run: git clone --depth 1 --branch 8.0.15 https://github.com/juce-framework/JUCE.git External/JUCE
+
+      - name: Linux packages
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libasound2-dev libjack-jackd2-dev libfreetype-dev libfontconfig1-dev \
+            libx11-dev libxcomposite-dev libxcursor-dev libxext-dev libxinerama-dev \
+            libxrandr-dev libxrender-dev xvfb
+
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --config Release --parallel 4
+
+      - name: Core tests
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then
+            xvfb-run -a build/LiveRackTests_artefacts/Release/LiveRackTests
+          else
+            build/LiveRackTests_artefacts/Release/LiveRackTests
+          fi
+
+      - name: Package
+        run: |
+          mkdir -p dist
+          out=build/LiveRack_artefacts/Release
+          case "$RUNNER_OS" in
+            macOS)
+              ditto -c -k --keepParent "$out/LiveRack.app" dist/LiveRack-macOS.zip ;;
+            Windows)
+              mkdir -p pkg/LiveRack
+              cp "$out"/LiveRack.exe "$out"/LiveRackScanner.exe "$out"/LiveRackGuard.exe README.md pkg/LiveRack/
+              (cd pkg && 7z a -tzip ../dist/LiveRack-Windows-x64.zip LiveRack > /dev/null) ;;
+            Linux)
+              mkdir -p pkg/LiveRack
+              cp "$out"/LiveRack "$out"/LiveRackScanner "$out"/LiveRackGuard README.md pkg/LiveRack/
+              cp Packaging/linux/install.sh Packaging/linux/liverack.desktop Resources/AppIcon.png pkg/LiveRack/
+              chmod +x pkg/LiveRack/install.sh
+              tar -czf dist/LiveRack-Linux-x64.tar.gz -C pkg LiveRack ;;
+          esac
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LiveRack-${{ matrix.name }}
+          path: dist/*

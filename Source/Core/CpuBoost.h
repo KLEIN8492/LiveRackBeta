@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <thread>
+#include "Platform/Platform.h"
 
 namespace lr
 {
@@ -27,9 +28,7 @@ public:
             {
                 for (int i = 0; i < 256; ++i)
                     sink = sink + 1.0;
-               #if defined (__aarch64__)
-                __builtin_arm_yield();
-               #endif
+                platform::cpuRelax();
             }
         });
     }

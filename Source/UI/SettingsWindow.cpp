@@ -167,13 +167,18 @@ public:
         list.setNumberOfThreadsForScanning (4);
         addAndMakeVisible (list);
 
-        for (auto* b : { &scanVst3, &scanAu })
+        for (auto* b : { &scanVst3, &scanOther })
         {
             b->setTooltip ("Finds new or updated plugins. Each one is tested in a separate process, so a bad plugin can't crash LiveRack.");
             addAndMakeVisible (*b);
         }
         scanVst3.onClick = [this] { scan ("VST3"); };
-        scanAu.onClick = [this] { scan ("AudioUnit"); };
+
+        // Audio Units on macOS, LV2 on Linux, nothing else on Windows.
+        const auto other = platform::secondaryPluginFormat();
+        scanOther.setButtonText (other == "AudioUnit" ? "SCAN AUDIO UNITS" : "SCAN " + other);
+        scanOther.setVisible (other.isNotEmpty());
+        scanOther.onClick = [this, other] { scan (other); };
     }
 
     void scan (const juce::String& formatName)
@@ -191,7 +196,7 @@ public:
         auto buttons = r.removeFromTop (28);
         scanVst3.setBounds (buttons.removeFromLeft (120));
         buttons.removeFromLeft (6);
-        scanAu.setBounds (buttons.removeFromLeft (160));
+        scanOther.setBounds (buttons.removeFromLeft (160));
         r.removeFromTop (10);
         list.setBounds (r);
     }
@@ -199,7 +204,7 @@ public:
 private:
     AppContext& ctx;
     juce::PluginListComponent list;
-    juce::TextButton scanVst3 { "SCAN VST3" }, scanAu { "SCAN AUDIO UNITS" };
+    juce::TextButton scanVst3 { "SCAN VST3" }, scanOther;
 };
 
 // ---------------------------------------------------------------------------

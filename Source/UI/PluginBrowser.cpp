@@ -7,7 +7,7 @@ PluginBrowser::PluginBrowser (juce::KnownPluginList& known, juce::PropertiesFile
                               std::function<void (const juce::PluginDescription&)> onChosen)
     : settings (s), chosen (std::move (onChosen))
 {
-    // Prefer VST3: hide an AU when the same plugin is installed as VST3
+    // Prefer VST3: hide an AU or LV2 when the same plugin is installed as VST3
     // (some AU variants, e.g. MIDI-controlled "aumf" effects, misbehave in hosts).
     const auto types = known.getTypes();
     auto key = [] (const juce::PluginDescription& d) { return (d.manufacturerName + "|" + d.name).toLowerCase(); };
@@ -20,7 +20,7 @@ PluginBrowser::PluginBrowser (juce::KnownPluginList& known, juce::PropertiesFile
     {
         if (d.isInstrument && d.numInputChannels == 0)
             continue;
-        if (d.pluginFormatName == "AudioUnit" && vst3.count (key (d)) > 0)
+        if ((d.pluginFormatName == "AudioUnit" || d.pluginFormatName == "LV2") && vst3.count (key (d)) > 0)
             continue;
         all.push_back ({ d, PluginCategory::other });
     }

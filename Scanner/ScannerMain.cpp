@@ -5,12 +5,18 @@
 // Exit codes: 0 = found plugins, 3 = loaded but empty, 1/2 = failure.
 
 #include <juce_audio_processors/juce_audio_processors.h>
+#include "Platform/Platform.h"
 #include <thread>
 
 int main (int argc, char* argv[])
 {
-    if (argc < 4)
+    const auto args = lr::platform::commandLineArguments (argc, argv);
+    if (args.size() < 3)
         return 2;
+
+    // A plugin that crashes here must kill only this process, at once (on
+    // Windows, not hang on an error dialog until the scan times out).
+    lr::platform::configureCrashHandling();
 
     juce::ScopedJuceInitialiser_GUI juceInit;
     juce::Process::setDockIconVisible (false);
@@ -18,9 +24,9 @@ int main (int argc, char* argv[])
     juce::AudioPluginFormatManager formats;
     juce::addDefaultFormatsToManager (formats);
 
-    const juce::String formatName = juce::CharPointer_UTF8 (argv[1]);
-    const juce::String fileOrId = juce::CharPointer_UTF8 (argv[2]);
-    const juce::File output { juce::String (juce::CharPointer_UTF8 (argv[3])) };
+    const juce::String formatName = args[0];
+    const juce::String fileOrId = args[1];
+    const juce::File output { args[2] };
 
     juce::AudioPluginFormat* format = nullptr;
     for (auto* f : formats.getFormats())

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <juce_gui_basics/juce_gui_basics.h>
+#include "Platform/Platform.h"
 
 // Utilitarian theme: neutral greys, square corners, 1px rules, dense rows,
 // monospaced numbers. Colour is reserved for state (ok / warn / fault).
@@ -26,7 +27,7 @@ inline juce::Font font (float size, bool bold = false)
 
 inline juce::Font mono (float size, bool bold = false)
 {
-    return juce::Font (juce::FontOptions ("Menlo", size, bold ? juce::Font::bold : juce::Font::plain));
+    return juce::Font (juce::FontOptions (platform::monospaceFontName(), size, bold ? juce::Font::bold : juce::Font::plain));
 }
 
 // Small uppercase caption, e.g. column headers and field labels.
